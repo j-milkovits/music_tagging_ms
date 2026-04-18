@@ -211,6 +211,10 @@ Runs the same hybrid logic independently for each item and returns one result pe
 }
 ```
 
+## License
+
+This project is licensed under the **GNU General Public License v2.0** (GPL-2.0), the same license as [MusicBrainz Picard](https://picard.musicbrainz.org/), from which matching and tagging logic is derived. See [LICENSE](LICENSE) for the full license text.
+
 ## Notes
 
 - The API does not write files. It returns the matched MusicBrainz tags for a client to apply locally.
