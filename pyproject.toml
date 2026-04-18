@@ -1,0 +1,33 @@
+[project]
+name = "tagging-ms"
+version = "0.1.0"
+description = "Standalone MusicBrainz tagging microservice extracted from Picard"
+readme = "README.md"
+authors = [
+    { name = "j-milkovits", email = "j.milkovits.t@posteo.net" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.135.1",
+    "mutagen>=1.47.0",
+    "pydantic>=2.12.5",
+    "python-dotenv>=1.1.1",
+    "uvicorn>=0.42.0",
+]
+
+[project.scripts]
+tagging-ms = "tagging_ms.__main__:main"
+tagging-ms-test-autotag-files = "tagging_ms.test_autotag_files:main"
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["uv_build>=0.8.3,<0.9.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "black>=26.3.1",
+    "isort>=8.0.1",
+]

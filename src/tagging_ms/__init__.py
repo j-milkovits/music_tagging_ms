@@ -1,0 +1,1 @@
+"""Standalone MusicBrainz tagging microservice."""
