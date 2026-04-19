@@ -13,7 +13,8 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY src/ ./src/
 RUN uv sync --frozen --no-dev
 
-ENV PATH="/app/.venv/bin:$PATH"
+ENV PATH="/app/.venv/bin:$PATH" \
+    TAGGING_MS_HOST=0.0.0.0
 
 RUN useradd --create-home --shell /usr/sbin/nologin appuser \
     && chown -R appuser:appuser /app
