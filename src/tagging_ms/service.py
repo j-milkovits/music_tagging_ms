@@ -7,6 +7,7 @@ from .matcher import (CLUSTER_COMPARISON_WEIGHTS, FILE_COMPARISON_WEIGHTS,
                       aggregate_cluster_metadata, assign_files_to_release,
                       best_match, build_release_tracks, compare_release,
                       compare_track, get_search_score,
+                      select_release_by_country,
                       tagged_metadata_for_assignment)
 from .models import (AudioMetadata, ClusterMatch, FileAssignment, InputFile,
                      MatchCandidate)
@@ -75,11 +76,13 @@ class StandaloneTaggingService:
         source_id: str = "input",
         track_match_threshold: float = 0.0,
         search_limit: int = 10,
+        preferred_countries: list[str] | None = None,
     ) -> FileAssignment:
         return self.autotag_acoustid_tracks(
             [(source_id, fingerprint, duration)],
             track_match_threshold=track_match_threshold,
             search_limit=search_limit,
+            preferred_countries=preferred_countries,
         )[0]
 
     def autotag_acoustid_tracks(
@@ -87,6 +90,7 @@ class StandaloneTaggingService:
         items: list[tuple[str, str, int]],
         track_match_threshold: float = 0.0,
         search_limit: int = 10,
+        preferred_countries: list[str] | None = None,
     ) -> list[FileAssignment]:
         results: list[FileAssignment] = []
         for source_id, fingerprint, duration in items:
@@ -106,6 +110,7 @@ class StandaloneTaggingService:
                     ),
                     threshold=track_match_threshold,
                     no_match_reason="No AcoustID track match above threshold",
+                    preferred_countries=preferred_countries,
                 )
             )
         return results
@@ -206,7 +211,8 @@ class StandaloneTaggingService:
 
         recording = candidate.payload
         releases = recording.get("releases") or []
-        release_id = releases[0]["id"] if releases else None
+        selected_release = select_release_by_country(releases, preferred_countries)
+        release_id = selected_release["id"] if selected_release else None
         if not release_id:
             return FileAssignment(
                 source_path=source_path,
@@ -294,7 +300,8 @@ class StandaloneTaggingService:
 
             recording = candidate.payload
             releases = recording.get("releases") or []
-            release_id = releases[0]["id"] if releases else None
+            selected_release = select_release_by_country(releases, preferred_countries)
+            release_id = selected_release["id"] if selected_release else None
             if not release_id:
                 results.append(
                     FileAssignment(

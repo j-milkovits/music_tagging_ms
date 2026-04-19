@@ -649,6 +649,15 @@ class AcoustIdFileLookupRequest(BaseModel):
         le=1.0,
         description="Minimum AcoustID score required for accepting the match.",
     )
+    preferred_release_countries: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Ordered ISO-3166-1 country codes used to pick which release "
+            "attached to the matched recording is used for tagging. "
+            "AcoustID-only ranking is unchanged; this only affects release "
+            "selection."
+        ),
+    )
 
     model_config = {
         "title": "AcoustIdFileLookupRequest",
@@ -659,6 +668,7 @@ class AcoustIdFileLookupRequest(BaseModel):
                 "duration": 190,
                 "search_limit": 10,
                 "track_match_threshold": 0.0,
+                "preferred_release_countries": ["DE", "GB"],
             }
         },
     }
@@ -696,6 +706,15 @@ class AcoustIdBatchLookupRequest(BaseModel):
         le=1.0,
         description="Minimum AcoustID score required for accepting each file match.",
     )
+    preferred_release_countries: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Ordered ISO-3166-1 country codes used to pick which release "
+            "attached to each matched recording is used for tagging. "
+            "AcoustID-only ranking is unchanged; this only affects release "
+            "selection."
+        ),
+    )
 
     model_config = {
         "title": "AcoustIdBatchLookupRequest",
@@ -715,6 +734,7 @@ class AcoustIdBatchLookupRequest(BaseModel):
                 ],
                 "search_limit": 10,
                 "track_match_threshold": 0.0,
+                "preferred_release_countries": ["DE", "GB"],
             }
         },
     }
@@ -990,6 +1010,7 @@ def lookup_acoustid_file(request: AcoustIdFileLookupRequest) -> dict:
             source_id=request.source_id,
             track_match_threshold=request.track_match_threshold,
             search_limit=request.search_limit,
+            preferred_countries=request.preferred_release_countries,
         )
         return {
             "mode": "acoustid-file",
@@ -1025,6 +1046,7 @@ def lookup_acoustid_files(request: AcoustIdBatchLookupRequest) -> dict:
             ],
             track_match_threshold=request.track_match_threshold,
             search_limit=request.search_limit,
+            preferred_countries=request.preferred_release_countries,
         )
         return {
             "mode": "acoustid-files",

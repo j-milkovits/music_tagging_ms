@@ -518,6 +518,19 @@ def _release_countries(release: dict) -> list[str]:
     return countries
 
 
+def select_release_by_country(
+    releases: list[dict], preferred_countries: list[str] | None
+) -> dict | None:
+    if not releases:
+        return None
+    if preferred_countries:
+        for country in preferred_countries:
+            for release in releases:
+                if release.get("country") == country:
+                    return release
+    return releases[0]
+
+
 def _pick_release_country(release: dict, preferred_countries: list[str] | None) -> str:
     if preferred_countries:
         available = _release_countries(release)
