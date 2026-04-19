@@ -7,17 +7,19 @@ ENV UV_LINK_MODE=copy \
 
 WORKDIR /app
 
-COPY . .
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --frozen --no-dev --no-install-project
 
+COPY src/ ./src/
 RUN uv sync --frozen --no-dev
 
 ENV PATH="/app/.venv/bin:$PATH"
-
-EXPOSE 8000
 
 RUN useradd --create-home --shell /usr/sbin/nologin appuser \
     && chown -R appuser:appuser /app
 
 USER appuser
+
+EXPOSE 8000
 
 CMD ["uv", "run", "tagging-ms"]
