@@ -292,6 +292,9 @@ def build_release_tracks(
             track_artist_credit = track.get("artist-credit", recording.get("artist-credit", []))
             recording_isrcs = recording.get("isrcs") or []
             rels = _extract_recording_relations(recording)
+            track_genre = _extract_genres(
+                recording, release, release.get("release-group") or {}
+            )
             metadata = AudioMetadata(
                 title=track.get("title", recording.get("title", "")),
                 artist=artist_credit_name(track_artist_credit),
@@ -329,6 +332,7 @@ def build_release_tracks(
                 mixer=rels["mixer"],
                 conductor=rels["conductor"],
                 performers=rels["performers"],
+                genre=track_genre,
             )
             tracks.append(
                 ReleaseTrack(
@@ -415,6 +419,34 @@ def tagged_metadata_for_assignment(release_track: ReleaseTrack) -> dict[str, str
         elif value != "":
             result[key] = str(value)
     return result
+
+
+_MAX_GENRES = 5
+_MIN_GENRE_USAGE_PCT = 90
+
+
+def _extract_genres(*nodes: dict) -> str:
+    """Aggregate MB genre arrays from one or more nodes into a joined string.
+
+    Mirrors Picard's defaults: cumulative counts across nodes, filter by
+    >= 90% of max count, top 5, title-cased, alphabetical, joined with '; '.
+    """
+    counter: Counter[str] = Counter()
+    for node in nodes:
+        for entry in node.get("genres") or []:
+            name = entry.get("name")
+            if not name:
+                continue
+            count = entry.get("count")
+            counter[name] += int(count or 1)
+    if not counter:
+        return ""
+    max_count = max(counter.values())
+    threshold = max_count * (_MIN_GENRE_USAGE_PCT / 100.0)
+    filtered = [(name, c) for name, c in counter.items() if c >= threshold]
+    top = sorted(filtered, key=lambda kv: (-kv[1], kv[0]))[: _MAX_GENRES]
+    names = sorted(name.title() for name, _ in top)
+    return "; ".join(names)
 
 
 def _extract_recording_relations(recording: dict) -> dict[str, str]:

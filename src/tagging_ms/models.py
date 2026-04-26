@@ -43,6 +43,7 @@ class AudioMetadata:
     mixer: str = ""
     conductor: str = ""
     performers: str = ""
+    genre: str = ""
 
 
 @dataclass(slots=True)

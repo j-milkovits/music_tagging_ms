@@ -48,6 +48,7 @@ _TAG_KEY_MAP = {
     "mixer": "mixer",
     "conductor": "conductor",
     "performers": "performers",
+    "genre": "genre",
 }
 
 

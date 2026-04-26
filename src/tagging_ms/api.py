@@ -238,6 +238,14 @@ class AppliedTagsResponse(BaseModel):
             "Multiple entries separated by '; '."
         ),
     )
+    genre: str | None = Field(
+        default=None,
+        description=(
+            "Genres aggregated from MusicBrainz across the recording, release, "
+            "and release-group. Top 5 by combined count, title-cased and "
+            "alphabetically sorted, joined with '; '."
+        ),
+    )
 
     model_config = {
         "title": "AppliedTagsResponse",
@@ -282,6 +290,7 @@ class AppliedTagsResponse(BaseModel):
                 "mixer": "A. Mixer",
                 "conductor": "",
                 "performers": "John Doe (Guitar); Jane Doe (lead vocals)",
+                "genre": "Pop; Rock",
             }
         },
     }

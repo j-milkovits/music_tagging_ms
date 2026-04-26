@@ -82,7 +82,7 @@ class MusicBrainzClient:
             f"/release/{release_id}",
             {
                 "fmt": "json",
-                "inc": "artists+artist-credits+recordings+release-groups+media+isrcs+labels+recording-level-rels+work-level-rels",
+                "inc": "artists+artist-credits+recordings+release-groups+media+isrcs+labels+recording-level-rels+work-level-rels+genres",
             },
         )
 
