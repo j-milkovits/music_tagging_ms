@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-import json
+import logging
 import os
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections import defaultdict
 from dataclasses import dataclass
 
-from .musicbrainz import MusicBrainzClient
+from . import ratecontrol
+from .musicbrainz import DEFAULT_USER_AGENT, MusicBrainzClient
+
+logger = logging.getLogger(__name__)
 
 SOURCE_THRESHOLD_NO_METADATA = 0.25
 MAX_NO_METADATA_RECORDINGS = 3
@@ -25,7 +29,7 @@ class AcoustIdClient:
         self,
         client_key: str | None = None,
         base_url: str = "https://api.acoustid.org/v2",
-        user_agent: str = "picard-micro-service/0.1",
+        user_agent: str | None = None,
         musicbrainz_client: MusicBrainzClient | None = None,
     ) -> None:
         self.client_key = (
@@ -34,9 +38,11 @@ class AcoustIdClient:
             or PICARD_ACOUSTID_LOOKUP_KEY
         )
         self.base_url = base_url.rstrip("/")
-        self.user_agent = user_agent
+        self.user_agent = user_agent or os.getenv(
+            "TAGGING_MS_USER_AGENT", DEFAULT_USER_AGENT
+        )
         self.musicbrainz_client = musicbrainz_client or MusicBrainzClient(
-            user_agent=user_agent
+            user_agent=self.user_agent
         )
 
     def lookup_by_id(self, acoustid_id: str, limit: int = 10) -> AcoustIdLookupResult:
@@ -89,17 +95,23 @@ class AcoustIdClient:
     def _post_json(self, path: str, params: dict[str, str]) -> dict:
         url = f"{self.base_url}{path}"
         body = urllib.parse.urlencode(params).encode()
-        request = urllib.request.Request(
-            url,
-            data=body,
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": self.user_agent,
-            },
-        )
-        with urllib.request.urlopen(request, timeout=30) as response:
-            return json.load(response)
+
+        def factory() -> urllib.request.Request:
+            return urllib.request.Request(
+                url,
+                data=body,
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "User-Agent": self.user_agent,
+                },
+            )
+
+        try:
+            return ratecontrol.send_json(factory, url)
+        except urllib.error.HTTPError:
+            logger.warning("[acoustid] request failed: %s", url)
+            raise
 
     def _normalize_results(self, results: list[dict]) -> list[dict]:
         recording_map: dict[str, dict[str, tuple[dict, float, int]]] = defaultdict(dict)

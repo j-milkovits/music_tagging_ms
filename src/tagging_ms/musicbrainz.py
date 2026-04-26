@@ -1,22 +1,31 @@
 from __future__ import annotations
 
-import json
+import logging
+import os
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Iterable
 
+from . import ratecontrol
 from .models import AudioMetadata
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_USER_AGENT = "tagging-ms/0.1"
 
 
 class MusicBrainzClient:
     def __init__(
         self,
         base_url: str = "https://musicbrainz.org/ws/2",
-        user_agent: str = "picard-micro-service/0.1",
+        user_agent: str | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
-        self.user_agent = user_agent
+        self.user_agent = user_agent or os.getenv(
+            "TAGGING_MS_USER_AGENT", DEFAULT_USER_AGENT
+        )
 
     def find_tracks(self, metadata: AudioMetadata, limit: int = 10) -> list[dict]:
         query_args = self._build_track_query_args(metadata)
@@ -88,15 +97,21 @@ class MusicBrainzClient:
 
     def _get_json(self, path: str, params: dict[str, str]) -> dict:
         url = f"{self.base_url}{path}?{urllib.parse.urlencode(params)}"
-        request = urllib.request.Request(
-            url,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": self.user_agent,
-            },
-        )
-        with urllib.request.urlopen(request, timeout=30) as response:
-            return json.load(response)
+
+        def factory() -> urllib.request.Request:
+            return urllib.request.Request(
+                url,
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": self.user_agent,
+                },
+            )
+
+        try:
+            return ratecontrol.send_json(factory, url)
+        except urllib.error.HTTPError:
+            logger.warning("[musicbrainz] request failed: %s", url)
+            raise
 
     def _build_track_query_args(self, metadata: AudioMetadata) -> dict[str, str]:
         query_args: dict[str, str] = {}

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import asdict
+from typing import TypeAliasType
 
 from .models import AudioMetadata, InputFile, MatchCandidate, ReleaseTrack
 from .musicbrainz import artist_credit_ids, artist_credit_name
@@ -43,7 +44,6 @@ TRACK_ASSIGNMENT_WEIGHTS = {
     "totaldiscs": 4,
     "length": 8,
 }
-
 
 def best_match(candidates: Iterable[MatchCandidate]) -> MatchCandidate | None:
     return max(candidates, key=lambda candidate: candidate.similarity, default=None)

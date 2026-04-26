@@ -24,7 +24,6 @@ class StandaloneTaggingService:
         self.client = client or MusicBrainzClient()
         self.acoustid_client = acoustid_client or AcoustIdClient(
             client_key=os.getenv("TAGGING_MS_ACOUSTID_API_KEY", ""),
-            user_agent="picard-micro-service/0.1",
             musicbrainz_client=self.client,
         )
 
