@@ -299,16 +299,69 @@ class StandaloneTaggingService:
         file_md = file.metadata or AudioMetadata()
 
         if not lookup.recordings:
-            return Unmatched(
+            fallback_recordings = self._search_recordings_by_metadata(file_md)
+            if not fallback_recordings:
+                return Unmatched(
+                    source_id=source_id,
+                    reason="AcoustID lookup returned no recordings",
+                    best_guess=None,
+                )
+            return self._select_best_release(
                 source_id=source_id,
-                reason="AcoustID lookup returned no recordings",
-                best_guess=None,
+                file_md=file_md,
+                recordings=fallback_recordings,
+                acoustid_id=None,
+                preferred_countries=preferred_countries,
+                min_per_file_score=min_per_file_score,
             )
+
+        return self._select_best_release(
+            source_id=source_id,
+            file_md=file_md,
+            recordings=list(lookup.recordings),
+            acoustid_id=lookup.acoustid_id,
+            preferred_countries=preferred_countries,
+            min_per_file_score=min_per_file_score,
+        )
+
+    def _search_recordings_by_metadata(self, file_md: AudioMetadata) -> list[dict]:
+        """Fallback when AcoustID returned nothing: search MusicBrainz by the
+        client-supplied metadata. Returns [] when the metadata is too sparse
+        to form a query."""
+        if not (
+            file_md.title
+            or file_md.artist
+            or file_md.release
+            or file_md.tracknumber
+            or file_md.totaltracks
+            or file_md.isrc
+            or file_md.length_ms
+        ):
+            return []
+        try:
+            return self.client.find_tracks(file_md)
+        except ValueError:
+            return []
+
+    def _select_best_release(
+        self,
+        source_id: str,
+        file_md: AudioMetadata,
+        recordings: list[dict],
+        acoustid_id: str | None,
+        preferred_countries: Sequence[str],
+        min_per_file_score: float,
+    ) -> MaterialisedRelease | Unmatched:
+        below_threshold_reason = (
+            "No AcoustID match above threshold"
+            if acoustid_id is not None
+            else "MusicBrainz search match below threshold"
+        )
 
         best_score = -1.0
         best_recording: dict | None = None
         best_release: dict | None = None
-        for recording in lookup.recordings:
+        for recording in recordings:
             for release in recording.get("releases") or []:
                 score = score_file_track_on_release(
                     file_md,
@@ -322,10 +375,9 @@ class StandaloneTaggingService:
                     best_recording = recording
                     best_release = release
 
-        # No recording carried a release — degrade to AcoustID raw score.
         if best_recording is None:
             best_recording = max(
-                lookup.recordings, key=lambda r: float(r.get("score", 0.0))
+                recordings, key=lambda r: float(r.get("score", 0.0))
             )
             best_score = float(best_recording.get("score", 0.0)) / 100.0
             return Unmatched(
@@ -334,7 +386,7 @@ class StandaloneTaggingService:
                 best_guess=BestGuess(
                     release_id=None,
                     recording_id=best_recording.get("id"),
-                    acoustid_id=lookup.acoustid_id,
+                    acoustid_id=acoustid_id,
                     score=round(max(best_score, 0.0), 6),
                 ),
             )
@@ -342,11 +394,11 @@ class StandaloneTaggingService:
         if best_score < min_per_file_score:
             return Unmatched(
                 source_id=source_id,
-                reason="No AcoustID match above threshold",
+                reason=below_threshold_reason,
                 best_guess=BestGuess(
                     release_id=(best_release or {}).get("id"),
                     recording_id=best_recording.get("id"),
-                    acoustid_id=lookup.acoustid_id,
+                    acoustid_id=acoustid_id,
                     score=round(max(best_score, 0.0), 6),
                 ),
             )
@@ -369,7 +421,7 @@ class StandaloneTaggingService:
                 best_guess=BestGuess(
                     release_id=best_release.get("id"),
                     recording_id=best_recording.get("id"),
-                    acoustid_id=lookup.acoustid_id,
+                    acoustid_id=acoustid_id,
                     score=round(max(best_score, 0.0), 6),
                 ),
             )
@@ -387,7 +439,7 @@ class StandaloneTaggingService:
                     source_id=source_id,
                     track_id=matched_track.track_id,
                     recording_id=matched_track.recording_id,
-                    acoustid_id=lookup.acoustid_id,
+                    acoustid_id=acoustid_id,
                     score=score,
                     applied_track_tags=track_tags,
                     artists=matched_track.artists,

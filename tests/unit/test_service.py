@@ -240,6 +240,238 @@ def test_lookup_per_file_groups_same_release_into_one_assignment() -> None:
     assert result.unmatched == ()
 
 
+def test_lookup_per_file_mb_fallback_above_threshold_produces_match() -> None:
+    """AcoustID empty + metadata + MB search hit → MaterialisedRelease,
+    acoustid_id=None on resulting tracks."""
+    release = _release_dict("rel-MB", ["rec-mb-1"])
+    mb_search_recording = {
+        "id": "rec-mb-1",
+        "title": "Track 1",
+        "length": 200_000,
+        "score": 100,
+        "releases": [release],
+    }
+
+    mb_client = MagicMock()
+    mb_client.find_tracks.return_value = [mb_search_recording]
+    mb_client.get_release.return_value = release
+
+    acoustid_client = MagicMock()
+    acoustid_client.lookup_by_fingerprint.return_value = AcoustIdLookupResult(
+        acoustid_id=None, recordings=[]
+    )
+
+    from tagging_ms.models import AudioMetadata
+
+    service = StandaloneTaggingService(
+        client=mb_client, acoustid_client=acoustid_client
+    )
+    result = service.lookup(
+        items=[
+            LookupItem(
+                source_id="f1",
+                fingerprint="fpX",
+                duration=200,
+                metadata=AudioMetadata(title="Track 1", length_ms=200_000),
+            )
+        ],
+        joint=False,
+        preferred_countries=["DE"],
+        thresholds=Thresholds(
+            min_per_file_score=0.3, min_coverage=0.5, split_margin=0.15
+        ),
+        search_limit=5,
+    )
+    mb_client.find_tracks.assert_called_once()
+    assert result.mode == "per-file"
+    assert len(result.assignments) == 1
+    assignment = result.assignments[0]
+    assert assignment.release_id == "rel-MB"
+    assert len(assignment.tracks) == 1
+    track = assignment.tracks[0]
+    assert track.source_id == "f1"
+    assert track.recording_id == "rec-mb-1"
+    assert track.acoustid_id is None
+    assert result.unmatched == ()
+
+
+def test_lookup_per_file_mb_fallback_below_threshold_yields_unmatched() -> None:
+    """AcoustID empty + MB search hit but score below threshold → Unmatched
+    with the MB-specific reason and a populated BestGuess."""
+    release = _release_dict("rel-MB", ["rec-mb-1"])
+    mb_search_recording = {
+        "id": "rec-mb-1",
+        "title": "Different Title",
+        "length": 999_000,
+        "score": 100,
+        "releases": [release],
+    }
+
+    mb_client = MagicMock()
+    mb_client.find_tracks.return_value = [mb_search_recording]
+    mb_client.get_release.return_value = release
+
+    acoustid_client = MagicMock()
+    acoustid_client.lookup_by_fingerprint.return_value = AcoustIdLookupResult(
+        acoustid_id=None, recordings=[]
+    )
+
+    from tagging_ms.models import AudioMetadata
+
+    service = StandaloneTaggingService(
+        client=mb_client, acoustid_client=acoustid_client
+    )
+    result = service.lookup(
+        items=[
+            LookupItem(
+                source_id="f1",
+                fingerprint="fpX",
+                duration=200,
+                metadata=AudioMetadata(title="Track 1", length_ms=200_000),
+            )
+        ],
+        joint=False,
+        preferred_countries=["DE"],
+        thresholds=Thresholds(
+            min_per_file_score=0.99, min_coverage=0.5, split_margin=0.15
+        ),
+        search_limit=5,
+    )
+    assert result.mode == "per-file"
+    assert result.assignments == ()
+    assert len(result.unmatched) == 1
+    u = result.unmatched[0]
+    assert u.reason == "MusicBrainz search match below threshold"
+    assert u.best_guess is not None
+    assert u.best_guess.recording_id == "rec-mb-1"
+    assert u.best_guess.acoustid_id is None
+    assert u.best_guess.release_id == "rel-MB"
+
+
+def test_lookup_per_file_no_metadata_skips_mb_fallback() -> None:
+    """AcoustID empty and no client metadata → unchanged 'no recordings'
+    Unmatched. find_tracks may be called but must not produce a network
+    request (it raises ValueError on empty metadata)."""
+    mb_client = MagicMock()
+    mb_client.find_tracks.side_effect = ValueError("empty metadata")
+
+    acoustid_client = MagicMock()
+    acoustid_client.lookup_by_fingerprint.return_value = AcoustIdLookupResult(
+        acoustid_id=None, recordings=[]
+    )
+    service = StandaloneTaggingService(
+        client=mb_client, acoustid_client=acoustid_client
+    )
+    result = service.lookup(
+        items=[LookupItem(source_id="f1", fingerprint="fpX", duration=200)],
+        joint=False,
+        preferred_countries=["DE"],
+        thresholds=Thresholds(
+            min_per_file_score=0.3, min_coverage=0.5, split_margin=0.15
+        ),
+        search_limit=5,
+    )
+    assert result.mode == "per-file"
+    assert result.assignments == ()
+    assert len(result.unmatched) == 1
+    u = result.unmatched[0]
+    assert u.reason == "AcoustID lookup returned no recordings"
+    assert u.best_guess is None
+
+
+def test_lookup_per_file_mb_fallback_empty_results_yields_unmatched() -> None:
+    """AcoustID empty + MB search returns [] → unchanged 'no recordings'
+    Unmatched."""
+    mb_client = MagicMock()
+    mb_client.find_tracks.return_value = []
+
+    acoustid_client = MagicMock()
+    acoustid_client.lookup_by_fingerprint.return_value = AcoustIdLookupResult(
+        acoustid_id=None, recordings=[]
+    )
+
+    from tagging_ms.models import AudioMetadata
+
+    service = StandaloneTaggingService(
+        client=mb_client, acoustid_client=acoustid_client
+    )
+    result = service.lookup(
+        items=[
+            LookupItem(
+                source_id="f1",
+                fingerprint="fpX",
+                duration=200,
+                metadata=AudioMetadata(title="Track 1", length_ms=200_000),
+            )
+        ],
+        joint=False,
+        preferred_countries=["DE"],
+        thresholds=Thresholds(
+            min_per_file_score=0.3, min_coverage=0.5, split_margin=0.15
+        ),
+        search_limit=5,
+    )
+    mb_client.find_tracks.assert_called_once()
+    assert result.mode == "per-file"
+    assert result.assignments == ()
+    assert len(result.unmatched) == 1
+    u = result.unmatched[0]
+    assert u.reason == "AcoustID lookup returned no recordings"
+    assert u.best_guess is None
+
+
+def test_lookup_joint_rescues_acoustid_empty_via_mb_search() -> None:
+    """In joint mode, a file with no AcoustID match but solid metadata is
+    rescued through the per-file fallback that hits MusicBrainz search."""
+    release = _release_dict("rel-MB", ["rec-mb-1"])
+    mb_search_recording = {
+        "id": "rec-mb-1",
+        "title": "Track 1",
+        "length": 200_000,
+        "score": 100,
+        "releases": [release],
+    }
+
+    mb_client = MagicMock()
+    mb_client.find_tracks.return_value = [mb_search_recording]
+    mb_client.get_release.return_value = release
+
+    acoustid_client = MagicMock()
+    acoustid_client.lookup_by_fingerprint.return_value = AcoustIdLookupResult(
+        acoustid_id=None, recordings=[]
+    )
+
+    from tagging_ms.models import AudioMetadata
+
+    service = StandaloneTaggingService(
+        client=mb_client, acoustid_client=acoustid_client
+    )
+    result = service.lookup(
+        items=[
+            LookupItem(
+                source_id="f1",
+                fingerprint="fpX",
+                duration=200,
+                metadata=AudioMetadata(title="Track 1", length_ms=200_000),
+            )
+        ],
+        joint=True,
+        preferred_countries=["DE"],
+        thresholds=Thresholds(
+            min_per_file_score=0.3, min_coverage=0.5, split_margin=0.15
+        ),
+        search_limit=5,
+    )
+    assert result.mode == "joint"
+    assert len(result.assignments) == 1
+    assignment = result.assignments[0]
+    assert assignment.release_id == "rel-MB"
+    assert len(assignment.tracks) == 1
+    assert assignment.tracks[0].source_id == "f1"
+    assert assignment.tracks[0].acoustid_id is None
+    assert result.unmatched == ()
+
+
 def test_lookup_per_file_match_produces_single_file_assignment() -> None:
     release = _release_dict("rel-Z", ["rec-1"])
     acoustid_client = MagicMock()
