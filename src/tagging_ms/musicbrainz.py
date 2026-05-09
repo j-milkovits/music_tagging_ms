@@ -9,7 +9,7 @@ import urllib.request
 from collections.abc import Iterable
 
 from . import ratecontrol
-from .models import AudioMetadata
+from .models import ArtistCredit, AudioMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -54,15 +54,15 @@ class MusicBrainzClient:
 
     def find_releases(self, metadata: AudioMetadata, limit: int = 10) -> list[dict]:
         query_args = {}
-        if metadata.album:
-            query_args["release"] = metadata.album
-        if metadata.albumartist:
-            query_args["artist"] = metadata.albumartist
+        if metadata.release:
+            query_args["release"] = metadata.release
+        if metadata.release_artist:
+            query_args["artist"] = metadata.release_artist
         if metadata.totaltracks:
             query_args["tracks"] = metadata.totaltracks
         if not query_args:
             raise ValueError(
-                "Album or albumartist is required for a MusicBrainz release lookup"
+                "release or release_artist is required for a MusicBrainz release lookup"
             )
 
         payload = self._get_json(
@@ -82,7 +82,18 @@ class MusicBrainzClient:
             f"/release/{release_id}",
             {
                 "fmt": "json",
-                "inc": "artists+artist-credits+recordings+release-groups+media+isrcs+labels+recording-level-rels+work-level-rels+genres",
+                # *-level-rels parameters control which entity gets a
+                # `relations` array; the target-type filters (`artist-rels`,
+                # `work-rels`) control which kinds of relations get included
+                # in those arrays. All four are needed for the full chain
+                # recording → work → composer/lyricist plus recording-level
+                # producer/conductor/performer credits.
+                "inc": (
+                    "artists+artist-credits+recordings+release-groups+media"
+                    "+isrcs+labels+genres"
+                    "+recording-level-rels+work-level-rels+release-rels"
+                    "+artist-rels+work-rels"
+                ),
             },
         )
 
@@ -119,8 +130,8 @@ class MusicBrainzClient:
             query_args["track"] = metadata.title
         if metadata.artist:
             query_args["artist"] = metadata.artist
-        if metadata.album:
-            query_args["release"] = metadata.album
+        if metadata.release:
+            query_args["release"] = metadata.release
         if metadata.tracknumber:
             query_args["tnum"] = metadata.tracknumber
         if metadata.totaltracks:
@@ -183,3 +194,22 @@ def artist_credit_ids(node: Iterable[dict]) -> str:
             if artist_id:
                 ids.append(str(artist_id))
     return "; ".join(ids)
+
+
+def parse_artist_credits(node: Iterable[dict]) -> tuple[ArtistCredit, ...]:
+    out: list[ArtistCredit] = []
+    for credit in node:
+        artist = credit.get("artist") or {}
+        name = str(credit.get("name") or artist.get("name") or "")
+        if not name:
+            continue
+        out.append(
+            ArtistCredit(
+                name=name,
+                sort_name=str(artist.get("sort-name") or ""),
+                musicbrainz_artistid=str(artist.get("id") or ""),
+                type=str(artist.get("type") or ""),
+                disambiguation=str(artist.get("disambiguation") or ""),
+            )
+        )
+    return tuple(out)

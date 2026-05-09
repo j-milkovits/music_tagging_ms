@@ -1,224 +1,198 @@
 # Tagging Microservice
 
-Standalone MusicBrainz tagging microservice extracted from Picard.
+HTTP service for joint AcoustID/MusicBrainz album matching, derived from the
+matching logic in [MusicBrainz Picard](https://picard.musicbrainz.org/).
 
-It covers:
+## Overview
 
-- matching a single file against MusicBrainz recordings
-- matching a cluster of files against MusicBrainz releases
-- identifying a single file via AcoustID only
-- identifying multiple files via AcoustID only in a batched API call
-- identifying a single file via AcoustID plus metadata
-- identifying multiple files via AcoustID plus metadata in a batched API call
-- assigning files to release tracks
-- writing matched tags back with `mutagen`
-- exposing lookup workflows through a small FastAPI app
+A single HTTP endpoint accepts one or more files (each: a Chromaprint
+fingerprint plus duration). It looks each file up against AcoustID and resolves
+the result against MusicBrainz, returning the tags that should be written
+client-side. The service does not read or write audio files.
 
-## Package layout
+Two modes:
 
-The Python package lives under `src/tagging_ms` to match the `uv` project's `src` layout.
-
-Interactive API documentation is available at `/docs` (Swagger UI) and `/redoc` (ReDoc) when the service is running.
-
-The FastAPI surface exposes three lookup families:
-
-- metadata: query MusicBrainz directly from provided metadata
-- acoustid: query AcoustID from a client-generated fingerprint plus duration and rank by AcoustID score only
-- hybrid: query AcoustID from a client-generated fingerprint plus duration and rank returned candidates against provided metadata
-
-All endpoints accept an optional `preferred_release_countries` list (ordered ISO-3166-1 codes) to bias release selection toward a preferred market. MusicBrainz pseudo-codes `XE` (Europe) and `XW` (worldwide) are supported alongside standard country codes.
-
-The backend does not need filesystem access. Metadata, fingerprint, and duration are provided by the client.
-
-### Tag coverage
-
-Every successful response includes an `applied_tags` object with a rich tag set sourced from MusicBrainz:
-
-- Core track tags: `title`, `artist`, `tracknumber`, `totaltracks`, `discnumber`, `totaldiscs`, `isrc`, `length_ms`
-- Album tags: `album`, `albumartist`, `date`, `originaldate`, `releasetype`, `releasecountry`, `media`, `label`, `catalognumber`, `barcode`, `script`
-- MusicBrainz IDs: `musicbrainz_albumid`, `musicbrainz_trackid`, `musicbrainz_recordingid`, `musicbrainz_releasegroupid`, `musicbrainz_artistid`, `musicbrainz_albumartistid`, `musicbrainz_workid`, `acoustid_id`
-- Relationship tags (from MusicBrainz Advanced Relationships): `work`, `composer`, `lyricist`, `writer`, `arranger`, `producer`, `engineer`, `mixer`, `conductor`, `performers`
-
-Relationship tags are populated in a single release lookup using `recording-level-rels` and `work-level-rels`. The two-hop chain recording → work → composer/lyricist/writer is resolved without additional requests. Fields are empty strings when no relevant relationship exists in MusicBrainz.
-
-Multiple values within a single field (e.g. two composers) are joined with `; `.
-
-See `/docs` or `/redoc` for the full field reference.
+- **Joint** (`joint: true`, default): pool the AcoustID candidates across all
+  submitted files and pick the release(s) that maximise the joint score, then
+  assign files to tracks within each chosen release. Implements
+  [`joint_matching_spec.md`](./joint_matching_spec.md).
+- **Per-file** (`joint: false`): pick the best release independently for each
+  file. Equivalent to the legacy AcoustID-only flow.
 
 ## Run
 
 ```bash
-cp .env_example .env
-uv sync
-uv run tagging-ms
+cp .env_example .env       # set TAGGING_MS_API_KEY and TAGGING_MS_ACOUSTID_API_KEY
+make install               # uv sync
+uv run tagging-ms          # binds to TAGGING_MS_HOST:TAGGING_MS_PORT
 ```
 
-For development with reload:
+For development with auto-reload:
 
 ```bash
 uv run uvicorn tagging_ms.api:app --reload
 ```
 
-To test `autotag_files()` directly without FastAPI:
+Container:
 
 ```bash
-uv run tagging-ms-test-autotag-files /path/to/song.flac --no-write-tags
+make build                 # passes git sha as build arg
+make run
 ```
 
 ## Endpoints
 
-`POST /api/lookup/metadata/file`
+Interactive docs at `/docs` (Swagger) and `/redoc`.
 
-Single-file metadata lookup.
-Computes a MusicBrainz recording search from the provided metadata, ranks candidates by metadata similarity, then loads the best release and assigns tags.
+| Method | Path           | Auth     | Purpose                                  |
+| ------ | -------------- | -------- | ---------------------------------------- |
+| GET    | `/api/health`  | none     | Liveness probe                           |
+| GET    | `/api/version` | none     | Service name, version, baked git sha     |
+| POST   | `/api/lookup`  | Bearer   | Joint or per-file AcoustID lookup        |
 
-```json
-{
-  "source_id": "song1.flac",
-  "metadata": {
-    "title": "Song 1",
-    "artist": "Artist 1",
-    "album": "Album 1",
-    "length_ms": 190000,
-    "format_name": "MP3"
-  },
-  "preferred_release_countries": ["DE", "XE", "XW"]
-}
-```
+### Auth
 
-`POST /api/lookup/metadata/cluster`
+`/api/lookup` requires `Authorization: Bearer $TAGGING_MS_API_KEY`. Tokens are
+compared via `hmac.compare_digest`. Missing or invalid tokens get `401`. If
+`TAGGING_MS_API_KEY` is not configured the service returns `500` from any
+authenticated endpoint.
 
-Album-style metadata lookup for multiple files.
-Aggregates cluster metadata, searches MusicBrainz releases, picks the best release, then assigns all files to release tracks.
+### `POST /api/lookup`
 
-```json
+Request:
+
+```jsonc
 {
   "items": [
     {
-      "source_id": "01.flac",
-      "metadata": {
+      "source_id": "01.wav",
+      "fingerprint": "AQAD...",
+      "duration": 287,
+      "metadata": {                          // optional, refines joint scoring
         "title": "Track 1",
         "artist": "Artist 1",
         "album": "Album 1",
-        "length_ms": 190000
-      }
-    },
-    {
-      "source_id": "02.flac",
-      "metadata": {
-        "title": "Track 2",
-        "artist": "Artist 1",
-        "album": "Album 1",
-        "length_ms": 210000
+        "length_ms": 287000
       }
     }
   ],
-  "track_match_threshold": 0.4,
-  "cluster_match_threshold": 0.5,
-  "preferred_release_countries": ["DE", "XE", "XW"]
-}
-```
-
-`POST /api/lookup/acoustid/file`
-
-Single-file AcoustID-only lookup.
-Queries AcoustID from the provided `fingerprint` and `duration`, ranks returned recordings by AcoustID score only, then loads the matched release and returns track tags.
-
-```json
-{
-  "source_id": "song1.mp3",
-  "fingerprint": "AQAAO0mUaEkSZSoAAAAAAAAA",
-  "duration": 190,
-  "preferred_release_countries": ["DE", "XE", "XW"]
-}
-```
-
-`POST /api/lookup/acoustid/files`
-
-Batched AcoustID-only lookup.
-Runs the same AcoustID-only logic independently for each item and returns one result per input item.
-
-```json
-{
-  "items": [
-    {
-      "source_id": "01.mp3",
-      "fingerprint": "AQAAO0mUaEkSZSoAAAAAAAAA",
-      "duration": 190
-    },
-    {
-      "source_id": "02.mp3",
-      "fingerprint": "AQAAjV2JZEoSZSoAAAAAAAAA",
-      "duration": 210
-    }
-  ],
-  "preferred_release_countries": ["DE", "XE", "XW"]
-}
-```
-
-`POST /api/lookup/hybrid/file`
-
-Single-file hybrid lookup.
-Queries AcoustID from the provided `fingerprint` and `duration`, then ranks the returned recordings against the provided metadata, similar to Picard's AcoustID flow.
-
-```json
-{
-  "source_id": "song1.mp3",
-  "fingerprint": "AQAAO0mUaEkSZSoAAAAAAAAA",
-  "duration": 190,
-  "metadata": {
-    "title": "Song 1",
-    "artist": "Artist 1",
-    "album": "Album 1",
-    "length_ms": 190000
+  "joint": true,
+  "preferred_release_countries": ["DE", "XE", "XW"],
+  "thresholds": {
+    "min_per_file_score": 0.5,
+    "min_coverage": 0.6,
+    "split_margin": 0.15
   },
-  "preferred_release_countries": ["DE", "XE", "XW"]
+  "search_limit": 10
 }
 ```
 
-`POST /api/lookup/hybrid/files`
+Response:
 
-Batched hybrid lookup.
-Runs the same hybrid logic independently for each item and returns one result per input item.
-
-```json
+```jsonc
 {
-  "items": [
+  "mode": "joint",
+  "assignments": [
     {
-      "source_id": "01.mp3",
-      "fingerprint": "AQAAO0mUaEkSZSoAAAAAAAAA",
-      "duration": 190,
-      "metadata": {
-        "title": "Track 1",
-        "artist": "Artist 1",
-        "album": "Album 1",
-        "length_ms": 190000
-      }
-    },
-    {
-      "source_id": "02.mp3",
-      "fingerprint": "AQAAjV2JZEoSZSoAAAAAAAAA",
-      "duration": 210,
-      "metadata": {
-        "title": "Track 2",
-        "artist": "Artist 1",
-        "album": "Album 1",
-        "length_ms": 210000
-      }
+      "release_id": "...",
+      "joint_score": 17.42,
+      "files": [
+        {
+          "source_id": "01.wav",
+          "track_id": "...", "recording_id": "...",
+          "score": 0.93,
+          "applied_tags": { /* full tag set, see below */ }
+        }
+      ],
+      "unmatched_files": []
     }
   ],
-  "preferred_release_countries": ["DE", "XE", "XW"]
+  "fallback_per_file": [],
+  "diagnostics": {
+    "candidate_releases_considered": 14,
+    "split_count": 1,
+    "files_in": 8,
+    "files_matched": 8
+  }
 }
 ```
 
-## License
+`assignments` is empty in `per-file` mode; everything lands in `fallback_per_file`.
 
-This project is licensed under the **GNU General Public License v2.0** (GPL-2.0), the same license as [MusicBrainz Picard](https://picard.musicbrainz.org/), from which matching and tagging logic is derived. See [LICENSE](LICENSE) for the full license text.
+### Applied tags
+
+Each match payload includes a rich tag set derived from the MusicBrainz release
+fetch (`recording-level-rels`, `work-level-rels`, `work-rels`, `artist-rels`,
+`release-rels`, `genres`):
+
+- Track tags: `title`, `artist`, `tracknumber`, `totaltracks`, `discnumber`,
+  `totaldiscs`, `isrc`, `length_ms`, `media`
+- Album tags: `album`, `albumartist`, `date`, `originaldate`, `releasetype`,
+  `releasecountry`, `label`, `catalognumber`, `barcode`, `script`
+- MusicBrainz IDs: `musicbrainz_albumid`, `musicbrainz_trackid`,
+  `musicbrainz_recordingid`, `musicbrainz_releasegroupid`,
+  `musicbrainz_artistid`, `musicbrainz_albumartistid`, `musicbrainz_workid`,
+  `acoustid_id`
+- Relationships: `work`, `composer`, `lyricist`, `writer`, `arranger`,
+  `producer`, `engineer`, `mixer`, `conductor`, `performers`
+- `genre` (top-N MB genres aggregated across recording, release, release-group)
+
+Multi-valued fields are joined with `; `. Empty fields are omitted from the
+response (rather than emitted as `null` or empty string).
+
+## Make targets
+
+| Target          | What it does                                |
+| --------------- | ------------------------------------------- |
+| `make install`  | `uv sync`                                   |
+| `make lint`     | `ruff check`                                |
+| `make format`   | `black` + `isort`                           |
+| `make typecheck`| `mypy`                                      |
+| `make test`     | `pytest` (cassette replay, no live calls)   |
+| `make check`    | lint + typecheck + test                     |
+| `make build`    | Docker build (passes `GIT_SHA` build arg)   |
+| `make run`      | Docker run with `.env`                      |
+| `make stop`     | Stop the container                          |
+| `make clean`    | Remove caches and `.venv`                   |
+
+## Tests
+
+`pytest` + `pytest-recording` (VCR cassettes). The default mode is
+`--record-mode=none` — cassettes replay only, no live API calls.
+
+Layout:
+
+```
+tests/
+  unit/                       # pure-function tests, no I/O
+  integration/                # FastAPI TestClient + cassette replay
+    cassettes/                # committed VCR cassettes
+  fixtures/
+    fingerprints.json         # Chromaprint fingerprints for test album
+    sample_release_*.json     # MB release snapshots
+    audio/                    # gitignored; provide your own .wav/.flac
+```
+
+Re-recording a cassette: delete the `*.yaml` under `tests/integration/cassettes/`
+and run:
+
+```bash
+TAGGING_MS_ACOUSTID_API_KEY=<key> \
+  uv run pytest tests/integration -k <name> --record-mode=once
+```
+
+VCR redacts `Authorization` and the AcoustID `client` POST/query parameter so
+cassettes can be committed safely.
 
 ## Notes
 
-- The API does not write files. It returns the matched MusicBrainz tags for a client to apply locally.
-- The local CLI helpers can still read and write files directly when you want single-machine testing.
-- The tag writer is generic `mutagen` logic, so it is simpler than Picard's format handlers.
-- Runtime settings are loaded from `tagging_ms/.env` via `python-dotenv`.
-- AcoustID lookups require a configured `TAGGING_MS_ACOUSTID_API_KEY`.
+- The service does not write files. It returns the resolved MusicBrainz tags
+  for the client to apply locally.
+- AcoustID lookups require `TAGGING_MS_ACOUSTID_API_KEY` in the environment.
+- Per-host rate limiting (1 s for MusicBrainz, 333 ms for AcoustID) is enforced
+  by `tagging_ms.ratecontrol`.
+
+## License
+
+GPL-2.0, matching the upstream MusicBrainz Picard project from which the
+matching and tag-extraction logic is derived. See [LICENSE](LICENSE).

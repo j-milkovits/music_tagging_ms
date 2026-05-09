@@ -3,61 +3,42 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import asdict
-from typing import TypeAliasType
 
-from .models import AudioMetadata, InputFile, MatchCandidate, ReleaseTrack
-from .musicbrainz import artist_credit_ids, artist_credit_name
-from .similarity import (extract_year_from_date, length_score,
-                         linear_combination_of_weights, similarity2,
-                         trackcount_score)
+from .models import (
+    ArtistCredit,
+    AudioMetadata,
+    MatchCandidate,
+    Performer,
+    ReleaseCredits,
+    ReleaseTrack,
+    TrackCredits,
+    Work,
+)
+from .musicbrainz import artist_credit_ids, artist_credit_name, parse_artist_credits
+from .similarity import (
+    extract_year_from_date,
+    length_score,
+    linear_combination_of_weights,
+    similarity2,
+    trackcount_score,
+)
 
-FILE_COMPARISON_WEIGHTS = {
-    "album": 5,
+FILE_COMPARISON_WEIGHTS: dict[str, int] = {
+    "release": 5,
     "artist": 4,
     "date": 4,
     "format": 2,
     "isvideo": 2,
     "length": 10,
-    "releasecountry": 2,
-    "releasetype": 14,
+    "release_country": 2,
+    "release_type": 14,
     "title": 13,
     "totaltracks": 4,
 }
 
-CLUSTER_COMPARISON_WEIGHTS = {
-    "album": 17,
-    "albumartist": 6,
-    "date": 4,
-    "format": 2,
-    "releasecountry": 2,
-    "releasetype": 10,
-    "totalalbumtracks": 5,
-}
-
-TRACK_ASSIGNMENT_WEIGHTS = {
-    "title": 22,
-    "artist": 6,
-    "album": 12,
-    "tracknumber": 6,
-    "totaltracks": 5,
-    "discnumber": 5,
-    "totaldiscs": 4,
-    "length": 8,
-}
 
 def best_match(candidates: Iterable[MatchCandidate]) -> MatchCandidate | None:
     return max(candidates, key=lambda candidate: candidate.similarity, default=None)
-
-
-def compare_release(
-    metadata: AudioMetadata,
-    release: dict,
-    weights: dict[str, int],
-    preferred_countries: list[str] | None = None,
-) -> float:
-    return linear_combination_of_weights(
-        compare_release_parts(metadata, release, weights, preferred_countries)
-    ) * get_search_score(release)
 
 
 def compare_release_parts(
@@ -68,19 +49,19 @@ def compare_release_parts(
 ) -> list[tuple[float, int]]:
     parts: list[tuple[float, int]] = []
 
-    if metadata.album and "album" in weights:
+    if metadata.release and "release" in weights:
         parts.append(
-            (similarity2(metadata.album, release.get("title", "")), weights["album"])
+            (similarity2(metadata.release, release.get("title", "")), weights["release"])
         )
 
-    if metadata.albumartist and "albumartist" in weights:
+    if metadata.release_artist and "release_artist" in weights:
         parts.append(
             (
                 similarity2(
-                    metadata.albumartist,
+                    metadata.release_artist,
                     artist_credit_name(release.get("artist-credit", [])),
                 ),
-                weights["albumartist"],
+                weights["release_artist"],
             )
         )
 
@@ -97,14 +78,6 @@ def compare_release_parts(
                 score = trackcount_score(expected, release.get("track-count", 0))
             parts.append((score, weights["totaltracks"]))
 
-    if "totalalbumtracks" in weights:
-        expected = _safe_int(metadata.totaltracks)
-        actual = _safe_int(release.get("track-count"))
-        if expected is not None and actual is not None:
-            parts.append(
-                (trackcount_score(expected, actual), weights["totalalbumtracks"])
-            )
-
     if metadata.date and "date" in weights:
         parts.append(
             (
@@ -113,15 +86,15 @@ def compare_release_parts(
             )
         )
 
-    if "releasecountry" in weights and preferred_countries:
+    if "release_country" in weights and preferred_countries:
         parts.append(
             (
                 _preferred_country_score(release, preferred_countries),
-                weights["releasecountry"],
+                weights["release_country"],
             )
         )
 
-    if metadata.releasetype and "releasetype" in weights:
+    if metadata.release_type and "release_type" in weights:
         release_type = ""
         release_group = release.get("release-group") or {}
         primary = release_group.get("primary-type")
@@ -133,7 +106,7 @@ def compare_release_parts(
                 [release_type, *(str(item).lower() for item in secondary)]
             ).strip()
         parts.append(
-            (similarity2(metadata.releasetype, release_type), weights["releasetype"])
+            (similarity2(metadata.release_type, release_type), weights["release_type"])
         )
 
     if metadata.format_name and "format" in weights:
@@ -151,12 +124,14 @@ def compare_release_parts(
     return parts
 
 
-def compare_track(
-    file_metadata: AudioMetadata,
-    track: dict,
-    weights: dict[str, int],
-    preferred_countries: list[str] | None = None,
-) -> float:
+def score_track_only_parts(
+    file_metadata: AudioMetadata, track: dict, weights: dict[str, int]
+) -> list[tuple[float, int]]:
+    """Build the file→track similarity parts (title/artist/length/isvideo).
+
+    These parts are independent of the release context and can be reused when
+    scoring the same track against multiple candidate releases.
+    """
     parts: list[tuple[float, int]] = []
 
     if file_metadata.title:
@@ -190,6 +165,35 @@ def compare_track(
             (1.0 if file_is_video == track_is_video else 0.0, weights["isvideo"])
         )
 
+    return parts
+
+
+def score_file_track_on_release(
+    file_metadata: AudioMetadata,
+    track: dict,
+    release: dict,
+    weights: dict[str, int],
+    preferred_countries: list[str] | None = None,
+) -> float:
+    """Score a (file, track, release) triple, multiplied by the track's search score.
+
+    This is the per-track-on-release scorer the joint matcher's stage 1 calls.
+    Equivalent to one iteration of the inner loop in `compare_track`.
+    """
+    parts = score_track_only_parts(file_metadata, track, weights)
+    parts.extend(compare_release_parts(file_metadata, release, weights, preferred_countries))
+    return linear_combination_of_weights(parts) * get_search_score(track)
+
+
+def compare_track(
+    file_metadata: AudioMetadata,
+    track: dict,
+    weights: dict[str, int],
+    preferred_countries: list[str] | None = None,
+) -> float:
+    """Score a file against a track, taking the best score across the track's releases."""
+    parts = score_track_only_parts(file_metadata, track, weights)
+
     releases = track.get("releases") or []
     if not releases:
         return linear_combination_of_weights(parts) * get_search_score(track)
@@ -206,34 +210,7 @@ def compare_track(
     return best
 
 
-def aggregate_cluster_metadata(files: list[InputFile]) -> AudioMetadata:
-    counter_title = Counter(
-        file.metadata.album for file in files if file.metadata.album
-    )
-    counter_artist = Counter(
-        file.metadata.albumartist or file.metadata.artist
-        for file in files
-        if file.metadata.artist
-    )
-    counter_date = Counter(file.metadata.date for file in files if file.metadata.date)
-    counter_type = Counter(
-        file.metadata.releasetype for file in files if file.metadata.releasetype
-    )
-    counter_format = Counter(
-        file.metadata.format_name for file in files if file.metadata.format_name
-    )
-    metadata = AudioMetadata(
-        album=counter_title.most_common(1)[0][0] if counter_title else "",
-        albumartist=counter_artist.most_common(1)[0][0] if counter_artist else "",
-        totaltracks=str(len(files)),
-        date=counter_date.most_common(1)[0][0] if counter_date else "",
-        releasetype=counter_type.most_common(1)[0][0] if counter_type else "",
-        format_name=counter_format.most_common(1)[0][0] if counter_format else "",
-    )
-    return metadata
-
-
-def release_to_album_metadata(
+def release_to_metadata(
     release: dict, preferred_countries: list[str] | None = None
 ) -> AudioMetadata:
     release_group = release.get("release-group") or {}
@@ -243,11 +220,11 @@ def release_to_album_metadata(
     ]
     label_infos = release.get("label-info") or []
     metadata = AudioMetadata(
-        album=release.get("title", ""),
-        albumartist=artist_credit_name(release.get("artist-credit", [])),
+        release=release.get("title", ""),
+        release_artist=artist_credit_name(release.get("artist-credit", [])),
         date=release.get("date", ""),
-        releasecountry=_pick_release_country(release, preferred_countries),
-        releasetype="; ".join(
+        release_country=_pick_release_country(release, preferred_countries),
+        release_type="; ".join(
             part for part in [primary_type, *secondary_types] if part
         ),
         totaldiscs=str(len(release.get("media", []))),
@@ -256,9 +233,9 @@ def release_to_album_metadata(
             for medium in release.get("media", [])
             if medium.get("format")
         ),
-        musicbrainz_albumid=release.get("id", ""),
-        musicbrainz_releasegroupid=release_group.get("id", ""),
-        musicbrainz_albumartistid=artist_credit_ids(release.get("artist-credit", [])),
+        musicbrainz_release_id=release.get("id", ""),
+        musicbrainz_release_group_id=release_group.get("id", ""),
+        musicbrainz_release_artist_id=artist_credit_ids(release.get("artist-credit", [])),
         barcode=release.get("barcode") or "",
         script=release.get("text-representation", {}).get("script") or "",
         originaldate=release_group.get("first-release-date", ""),
@@ -279,7 +256,9 @@ def release_to_album_metadata(
 def build_release_tracks(
     release: dict, preferred_countries: list[str] | None = None
 ) -> list[ReleaseTrack]:
-    release_metadata = release_to_album_metadata(release, preferred_countries)
+    release_metadata = release_to_metadata(release, preferred_countries)
+    release_credits = _extract_release_credits(release)
+    release_artists = parse_artist_credits(release.get("artist-credit", []))
     tracks: list[ReleaseTrack] = []
     media = release.get("media", [])
     totaldiscs = str(len(media))
@@ -291,121 +270,52 @@ def build_release_tracks(
             recording = track.get("recording", {})
             track_artist_credit = track.get("artist-credit", recording.get("artist-credit", []))
             recording_isrcs = recording.get("isrcs") or []
-            rels = _extract_recording_relations(recording)
+            track_credits = _extract_track_credits(recording)
             track_genre = _extract_genres(
                 recording, release, release.get("release-group") or {}
             )
             metadata = AudioMetadata(
                 title=track.get("title", recording.get("title", "")),
                 artist=artist_credit_name(track_artist_credit),
-                album=release_metadata.album,
-                albumartist=release_metadata.albumartist,
+                release=release_metadata.release,
+                release_artist=release_metadata.release_artist,
                 tracknumber=str(track.get("position", "")),
                 totaltracks=totaltracks,
                 discnumber=discnumber,
                 totaldiscs=totaldiscs,
                 date=release_metadata.date,
                 isrc=recording_isrcs[0] if recording_isrcs else "",
-                releasecountry=release_metadata.releasecountry,
-                releasetype=release_metadata.releasetype,
+                release_country=release_metadata.release_country,
+                release_type=release_metadata.release_type,
                 media=media_format,
                 length_ms=int(track.get("length") or recording.get("length") or 0),
-                musicbrainz_albumid=release_metadata.musicbrainz_albumid,
-                musicbrainz_releasegroupid=release_metadata.musicbrainz_releasegroupid,
+                musicbrainz_release_id=release_metadata.musicbrainz_release_id,
+                musicbrainz_release_group_id=release_metadata.musicbrainz_release_group_id,
                 musicbrainz_trackid=track.get("id", ""),
                 musicbrainz_recordingid=recording.get("id", ""),
                 musicbrainz_artistid=artist_credit_ids(track_artist_credit),
-                musicbrainz_albumartistid=release_metadata.musicbrainz_albumartistid,
-                musicbrainz_workid=rels["musicbrainz_workid"],
+                musicbrainz_release_artist_id=release_metadata.musicbrainz_release_artist_id,
                 barcode=release_metadata.barcode,
                 script=release_metadata.script,
                 originaldate=release_metadata.originaldate,
                 label=release_metadata.label,
                 catalognumber=release_metadata.catalognumber,
-                work=rels["work"],
-                composer=rels["composer"],
-                lyricist=rels["lyricist"],
-                writer=rels["writer"],
-                arranger=rels["arranger"],
-                producer=rels["producer"],
-                engineer=rels["engineer"],
-                mixer=rels["mixer"],
-                conductor=rels["conductor"],
-                performers=rels["performers"],
                 genre=track_genre,
             )
             tracks.append(
                 ReleaseTrack(
-                    album_id=release_metadata.musicbrainz_albumid,
-                    release_group_id=release_metadata.musicbrainz_releasegroupid,
+                    release_id=release_metadata.musicbrainz_release_id,
+                    release_group_id=release_metadata.musicbrainz_release_group_id,
                     track_id=metadata.musicbrainz_trackid,
                     recording_id=metadata.musicbrainz_recordingid,
                     metadata=metadata,
+                    release_artists=release_artists,
+                    artists=parse_artist_credits(track_artist_credit),
+                    track_credits=track_credits,
+                    release_credits=release_credits,
                 )
             )
     return tracks
-
-
-def assign_files_to_release(
-    files: list[InputFile], release_tracks: list[ReleaseTrack], threshold: float
-) -> list[tuple[InputFile, ReleaseTrack | None, float]]:
-    assignments: list[tuple[InputFile, ReleaseTrack | None, float]] = []
-    remaining_tracks = list(release_tracks)
-
-    for file in files:
-        direct_match = _match_by_mbid(file, remaining_tracks)
-        if direct_match is not None:
-            assignments.append((file, direct_match, 1.0))
-            remaining_tracks.remove(direct_match)
-            continue
-
-        candidates = []
-        for track in remaining_tracks:
-            similarity = compare_file_to_album_track(file.metadata, track.metadata)
-            if similarity >= threshold:
-                candidates.append((similarity, track))
-        if not candidates:
-            assignments.append((file, None, 0.0))
-            continue
-        similarity, track = max(candidates, key=lambda item: item[0])
-        assignments.append((file, track, similarity))
-        remaining_tracks.remove(track)
-
-    return assignments
-
-
-def compare_file_to_album_track(
-    file_metadata: AudioMetadata, track_metadata: AudioMetadata
-) -> float:
-    parts: list[tuple[float, int]] = []
-    if file_metadata.length_ms and track_metadata.length_ms:
-        parts.append(
-            (
-                length_score(file_metadata.length_ms, track_metadata.length_ms),
-                TRACK_ASSIGNMENT_WEIGHTS["length"],
-            )
-        )
-
-    for field_name in ("title", "artist", "album"):
-        value_a = getattr(file_metadata, field_name)
-        value_b = getattr(track_metadata, field_name)
-        if value_a and value_b:
-            parts.append(
-                (similarity2(value_a, value_b), TRACK_ASSIGNMENT_WEIGHTS[field_name])
-            )
-
-    for field_name in ("tracknumber", "totaltracks", "discnumber", "totaldiscs"):
-        value_a = getattr(file_metadata, field_name)
-        value_b = getattr(track_metadata, field_name)
-        if value_a and value_b:
-            parts.append(
-                (
-                    1.0 if str(value_a) == str(value_b) else 0.0,
-                    TRACK_ASSIGNMENT_WEIGHTS[field_name],
-                )
-            )
-
-    return linear_combination_of_weights(parts)
 
 
 def tagged_metadata_for_assignment(release_track: ReleaseTrack) -> dict[str, str]:
@@ -419,6 +329,46 @@ def tagged_metadata_for_assignment(release_track: ReleaseTrack) -> dict[str, str
         elif value != "":
             result[key] = str(value)
     return result
+
+
+RELEASE_TAG_KEYS: frozenset[str] = frozenset(
+    {
+        "release",
+        "date",
+        "originaldate",
+        "release_country",
+        "release_type",
+        "musicbrainz_release_id",
+        "musicbrainz_release_group_id",
+        "musicbrainz_release_artist_id",
+        "label",
+        "catalognumber",
+        "barcode",
+        "script",
+    }
+)
+
+# Flat tags superseded by structured siblings on the response
+# (`release_artist`/`musicbrainz_release_artist_id` → `release_artists`,
+# `artist`/`musicbrainz_artistid` → `artists`). Suppressed from both release-
+# and track-level dicts so callers don't see redundant data.
+SUPERSEDED_TAG_KEYS: frozenset[str] = frozenset(
+    {"release_artist", "musicbrainz_release_artist_id", "artist", "musicbrainz_artistid"}
+)
+
+
+def split_release_track_tags(
+    release_track: ReleaseTrack,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Materialise tags and partition into (release-level, track-level)."""
+    all_tags = {
+        k: v
+        for k, v in tagged_metadata_for_assignment(release_track).items()
+        if k not in SUPERSEDED_TAG_KEYS
+    }
+    release_tags = {k: v for k, v in all_tags.items() if k in RELEASE_TAG_KEYS}
+    track_tags = {k: v for k, v in all_tags.items() if k not in RELEASE_TAG_KEYS}
+    return release_tags, track_tags
 
 
 _MAX_GENRES = 5
@@ -449,79 +399,144 @@ def _extract_genres(*nodes: dict) -> str:
     return "; ".join(names)
 
 
-def _extract_recording_relations(recording: dict) -> dict[str, str]:
-    composers: list[str] = []
-    lyricists: list[str] = []
-    writers: list[str] = []
-    arrangers: list[str] = []
-    producers: list[str] = []
-    engineers: list[str] = []
-    mixers: list[str] = []
-    conductors: list[str] = []
-    performers: list[str] = []
-    work_ids: list[str] = []
-    work_titles: list[str] = []
+def _artist_credit_from_rel(rel: dict) -> ArtistCredit | None:
+    artist = rel.get("artist") or {}
+    name = str(artist.get("name") or "")
+    if not name:
+        return None
+    return ArtistCredit(
+        name=name,
+        sort_name=str(artist.get("sort-name") or ""),
+        musicbrainz_artistid=str(artist.get("id") or ""),
+        type=str(artist.get("type") or ""),
+        disambiguation=str(artist.get("disambiguation") or ""),
+    )
+
+
+def _performer_from_rel(rel: dict) -> Performer | None:
+    artist = rel.get("artist") or {}
+    name = str(artist.get("name") or "")
+    if not name:
+        return None
+    attrs = tuple(str(a) for a in (rel.get("attributes") or []))
+    return Performer(
+        name=name,
+        sort_name=str(artist.get("sort-name") or ""),
+        musicbrainz_artistid=str(artist.get("id") or ""),
+        type=str(artist.get("type") or ""),
+        disambiguation=str(artist.get("disambiguation") or ""),
+        attributes=attrs,
+    )
+
+
+_PERFORMER_REL_TYPES: frozenset[str] = frozenset(
+    {"instrument", "vocal", "performer", "performing orchestra"}
+)
+
+
+def _bucket_artist_rel(
+    rel: dict,
+    buckets: dict[str, list[ArtistCredit]],
+    performers: list[Performer],
+) -> None:
+    rel_type = rel.get("type", "")
+    if rel_type in _PERFORMER_REL_TYPES:
+        performer = _performer_from_rel(rel)
+        if performer is not None:
+            performers.append(performer)
+        return
+    bucket_key = {
+        "producer": "producers",
+        "engineer": "engineers",
+        "mix": "mixers",
+        "conductor": "conductors",
+        "arranger": "arrangers",
+    }.get(rel_type)
+    if bucket_key is None:
+        return
+    credit = _artist_credit_from_rel(rel)
+    if credit is not None:
+        buckets[bucket_key].append(credit)
+
+
+_TRACK_WORK_REL_BUCKETS = {
+    "composer": "composers",
+    "lyricist": "lyricists",
+    "writer": "writers",
+    "arranger": "arrangers",
+}
+
+
+def _extract_track_credits(recording: dict) -> TrackCredits:
+    buckets: dict[str, list[ArtistCredit]] = {
+        "producers": [],
+        "engineers": [],
+        "mixers": [],
+        "conductors": [],
+        "arrangers": [],
+        "composers": [],
+        "lyricists": [],
+        "writers": [],
+    }
+    performers: list[Performer] = []
+    works: list[Work] = []
 
     for rel in recording.get("relations") or []:
-        rel_type = rel.get("type", "")
         target_type = rel.get("target-type", "")
-
         if target_type == "artist":
-            name = (rel.get("artist") or {}).get("name", "")
-            if not name:
-                continue
-            attrs = rel.get("attributes") or []
-            if rel_type == "producer":
-                producers.append(name)
-            elif rel_type == "engineer":
-                engineers.append(name)
-            elif rel_type == "mix":
-                mixers.append(name)
-            elif rel_type == "conductor":
-                conductors.append(name)
-            elif rel_type == "arranger":
-                arrangers.append(name)
-            elif rel_type in ("instrument", "vocal", "performer"):
-                if attrs:
-                    performers.append(f"{name} ({', '.join(attrs)})")
-                else:
-                    performers.append(name)
-
-        elif target_type == "work" and rel_type == "performance":
+            _bucket_artist_rel(rel, buckets, performers)
+        elif target_type == "work" and rel.get("type") == "performance":
             work = rel.get("work") or {}
-            if work.get("id"):
-                work_ids.append(work["id"])
-            if work.get("title"):
-                work_titles.append(work["title"])
+            title = str(work.get("title") or "")
+            work_id = str(work.get("id") or "")
+            if title or work_id:
+                works.append(Work(title=title, musicbrainz_id=work_id))
             for work_rel in work.get("relations") or []:
                 if work_rel.get("target-type") != "artist":
                     continue
-                name = (work_rel.get("artist") or {}).get("name", "")
-                if not name:
+                bucket_key = _TRACK_WORK_REL_BUCKETS.get(work_rel.get("type", ""))
+                if bucket_key is None:
                     continue
-                wrt = work_rel.get("type", "")
-                if wrt == "composer":
-                    composers.append(name)
-                elif wrt == "lyricist":
-                    lyricists.append(name)
-                elif wrt == "writer":
-                    writers.append(name)
-                elif wrt == "arranger":
-                    arrangers.append(name)
+                credit = _artist_credit_from_rel(work_rel)
+                if credit is not None:
+                    buckets[bucket_key].append(credit)
 
-    return {
-        "musicbrainz_workid": "; ".join(work_ids),
-        "work": "; ".join(work_titles),
-        "composer": "; ".join(composers),
-        "lyricist": "; ".join(lyricists),
-        "writer": "; ".join(writers),
-        "arranger": "; ".join(arrangers),
-        "producer": "; ".join(producers),
-        "engineer": "; ".join(engineers),
-        "mixer": "; ".join(mixers),
-        "conductor": "; ".join(conductors),
-        "performers": "; ".join(performers),
+    return TrackCredits(
+        composers=tuple(buckets["composers"]),
+        lyricists=tuple(buckets["lyricists"]),
+        writers=tuple(buckets["writers"]),
+        arrangers=tuple(buckets["arrangers"]),
+        producers=tuple(buckets["producers"]),
+        engineers=tuple(buckets["engineers"]),
+        mixers=tuple(buckets["mixers"]),
+        conductors=tuple(buckets["conductors"]),
+        performers=tuple(performers),
+        works=tuple(works),
+    )
+
+
+def _extract_release_credits(release: dict) -> ReleaseCredits:
+    """Extract release-level artist relations (e.g. release-wide producer)."""
+    buckets: dict[str, list[ArtistCredit]] = {
+        "producers": [],
+        "engineers": [],
+        "mixers": [],
+        "conductors": [],
+        "arrangers": [],
     }
+    performers: list[Performer] = []
+    for rel in release.get("relations") or []:
+        if rel.get("target-type") != "artist":
+            continue
+        _bucket_artist_rel(rel, buckets, performers)
+    return ReleaseCredits(
+        producers=tuple(buckets["producers"]),
+        engineers=tuple(buckets["engineers"]),
+        mixers=tuple(buckets["mixers"]),
+        conductors=tuple(buckets["conductors"]),
+        arrangers=tuple(buckets["arrangers"]),
+        performers=tuple(performers),
+    )
 
 
 def _preferred_country_score(release: dict, preferred_countries: list[str]) -> float:
@@ -548,19 +563,6 @@ def _release_countries(release: dict) -> list[str]:
     if not countries and release.get("country"):
         countries.append(release["country"])
     return countries
-
-
-def select_release_by_country(
-    releases: list[dict], preferred_countries: list[str] | None
-) -> dict | None:
-    if not releases:
-        return None
-    if preferred_countries:
-        for country in preferred_countries:
-            for release in releases:
-                if release.get("country") == country:
-                    return release
-    return releases[0]
 
 
 def _pick_release_country(release: dict, preferred_countries: list[str] | None) -> str:
@@ -599,25 +601,9 @@ def _date_match_factor(metadata_date: str, release_date: str) -> float:
 
 
 def _safe_int(value: object) -> int | None:
+    if value is None or value == "":
+        return None
     try:
-        if value in (None, ""):
-            return None
-        return int(value)
+        return int(value)  # type: ignore[call-overload]
     except (TypeError, ValueError):
         return None
-
-
-def _match_by_mbid(file: InputFile, tracks: list[ReleaseTrack]) -> ReleaseTrack | None:
-    metadata = file.metadata
-    for track in tracks:
-        if (
-            metadata.musicbrainz_recordingid
-            and metadata.musicbrainz_recordingid == track.recording_id
-        ):
-            return track
-        if (
-            metadata.musicbrainz_trackid
-            and metadata.musicbrainz_trackid == track.track_id
-        ):
-            return track
-    return None

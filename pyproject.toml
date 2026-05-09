@@ -1,7 +1,7 @@
 [project]
 name = "tagging-ms"
-version = "0.1.0"
-description = "Standalone MusicBrainz tagging microservice extracted from Picard"
+version = "0.2.0"
+description = "Standalone MusicBrainz/AcoustID matching microservice with joint album matching"
 readme = "README.md"
 authors = [
     { name = "j-milkovits", email = "j.milkovits.t@posteo.net" }
@@ -9,15 +9,14 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.135.1",
-    "mutagen>=1.47.0",
     "pydantic>=2.12.5",
     "python-dotenv>=1.1.1",
+    "scipy>=1.14",
     "uvicorn>=0.42.0",
 ]
 
 [project.scripts]
 tagging-ms = "tagging_ms.__main__:main"
-tagging-ms-test-autotag-files = "tagging_ms.test_autotag_files:main"
 
 [tool.uv]
 package = true
@@ -29,5 +28,47 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "black>=26.3.1",
+    "httpx>=0.28",
     "isort>=8.0.1",
+    "mypy>=1.13",
+    "pytest>=8.3",
+    "pytest-recording>=0.13",
+    "ruff>=0.9",
+    "vcrpy>=6.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011"]
+
+[tool.mypy]
+python_version = "3.13"
+# JSON payloads from MB/AcoustID are intentionally untyped; we trust the parser
+# layer rather than mirror the upstream schema in Python types. The remaining
+# strict settings still catch real bugs (untyped defs, missing returns, etc.).
+strict = true
+disallow_any_generics = false
+warn_return_any = false
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["scipy.*", "vcr.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "tagging_ms.musicbrainz"
+disable_error_code = ["dict-item"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--record-mode=none -ra"
+filterwarnings = [
+    "ignore::DeprecationWarning:vcr.*",
 ]

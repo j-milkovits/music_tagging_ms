@@ -7,84 +7,97 @@ from dataclasses import dataclass, field
 class AudioMetadata:
     title: str = ""
     artist: str = ""
-    album: str = ""
-    albumartist: str = ""
+    release: str = ""
+    release_artist: str = ""
     tracknumber: str = ""
     totaltracks: str = ""
     discnumber: str = ""
     totaldiscs: str = ""
     date: str = ""
     isrc: str = ""
-    releasecountry: str = ""
-    releasetype: str = ""
+    release_country: str = ""
+    release_type: str = ""
     media: str = ""
     format_name: str = ""
     is_video: bool = False
     length_ms: int = 0
-    musicbrainz_albumid: str = ""
+    musicbrainz_release_id: str = ""
     musicbrainz_trackid: str = ""
     musicbrainz_recordingid: str = ""
-    musicbrainz_releasegroupid: str = ""
+    musicbrainz_release_group_id: str = ""
     musicbrainz_artistid: str = ""
-    musicbrainz_albumartistid: str = ""
-    musicbrainz_workid: str = ""
+    musicbrainz_release_artist_id: str = ""
     label: str = ""
     catalognumber: str = ""
     barcode: str = ""
     script: str = ""
     originaldate: str = ""
-    work: str = ""
-    composer: str = ""
-    lyricist: str = ""
-    writer: str = ""
-    arranger: str = ""
-    producer: str = ""
-    engineer: str = ""
-    mixer: str = ""
-    conductor: str = ""
-    performers: str = ""
     genre: str = ""
 
 
-@dataclass(slots=True)
-class InputFile:
-    path: str
-    metadata: AudioMetadata
+@dataclass(frozen=True, slots=True)
+class ArtistCredit:
+    name: str
+    sort_name: str = ""
+    musicbrainz_artistid: str = ""
+    type: str = ""
+    disambiguation: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class Performer:
+    name: str
+    sort_name: str = ""
+    musicbrainz_artistid: str = ""
+    type: str = ""
+    disambiguation: str = ""
+    attributes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class Work:
+    title: str
+    musicbrainz_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class TrackCredits:
+    composers: tuple[ArtistCredit, ...] = ()
+    lyricists: tuple[ArtistCredit, ...] = ()
+    writers: tuple[ArtistCredit, ...] = ()
+    arrangers: tuple[ArtistCredit, ...] = ()
+    producers: tuple[ArtistCredit, ...] = ()
+    engineers: tuple[ArtistCredit, ...] = ()
+    mixers: tuple[ArtistCredit, ...] = ()
+    conductors: tuple[ArtistCredit, ...] = ()
+    performers: tuple[Performer, ...] = ()
+    works: tuple[Work, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseCredits:
+    producers: tuple[ArtistCredit, ...] = ()
+    engineers: tuple[ArtistCredit, ...] = ()
+    mixers: tuple[ArtistCredit, ...] = ()
+    conductors: tuple[ArtistCredit, ...] = ()
+    arrangers: tuple[ArtistCredit, ...] = ()
+    performers: tuple[Performer, ...] = ()
 
 
 @dataclass(slots=True)
 class ReleaseTrack:
-    album_id: str
+    release_id: str
     release_group_id: str
     track_id: str
     recording_id: str
     metadata: AudioMetadata
+    release_artists: tuple[ArtistCredit, ...] = ()
+    artists: tuple[ArtistCredit, ...] = ()
+    track_credits: TrackCredits = field(default_factory=TrackCredits)
+    release_credits: ReleaseCredits = field(default_factory=ReleaseCredits)
 
 
 @dataclass(slots=True)
 class MatchCandidate:
     similarity: float
     payload: dict | None = None
-
-
-@dataclass(slots=True)
-class FileAssignment:
-    source_path: str
-    matched: bool
-    similarity: float
-    acoustid_id: str | None = None
-    target_path: str | None = None
-    release_id: str | None = None
-    track_id: str | None = None
-    recording_id: str | None = None
-    applied_tags: dict[str, str] = field(default_factory=dict)
-    reason: str | None = None
-
-
-@dataclass(slots=True)
-class ClusterMatch:
-    release_id: str
-    similarity: float
-    release_title: str
-    release_artist: str
-    assignments: list[FileAssignment]

@@ -6,5 +6,10 @@ __pycache__
 *.pyd
 .pytest_cache
 .ruff_cache
+.mypy_cache
 build
 dist
+tests
+examples
+REFACTOR_PLAN.md
+joint_matching_spec.md

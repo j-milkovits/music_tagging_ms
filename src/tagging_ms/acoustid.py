@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import urllib.error
@@ -40,7 +41,7 @@ class AcoustIdClient:
         self.base_url = base_url.rstrip("/")
         self.user_agent = user_agent or os.getenv(
             "TAGGING_MS_USER_AGENT", DEFAULT_USER_AGENT
-        )
+        ) or DEFAULT_USER_AGENT
         self.musicbrainz_client = musicbrainz_client or MusicBrainzClient(
             user_agent=self.user_agent
         )
@@ -179,31 +180,52 @@ class AcoustIdClient:
         return normalized
 
 
+def _coerce_date(value: object) -> str:
+    """Normalise an AcoustID date (dict or str) to an ISO `YYYY[-MM[-DD]]` string."""
+    if not value:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        year = value.get("year")
+        if year is None:
+            return ""
+        month = value.get("month")
+        day = value.get("day")
+        if month and day:
+            return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+        if month:
+            return f"{int(year):04d}-{int(month):02d}"
+        return f"{int(year):04d}"
+    return str(value)
+
+
 def _make_releases_node(recording: dict) -> list[dict]:
     release_list: list[dict] = []
     for release_group in recording.get("releasegroups") or []:
         for release in release_group.get("releases") or []:
-            release_mb = {
+            release_mb: dict[str, object] = {
                 "id": release["id"],
                 "release-group": {"id": release_group["id"]},
                 "title": release.get("title") or release_group.get("title", ""),
                 "media": [],
             }
+            rg_node: dict[str, object] = release_mb["release-group"]  # type: ignore[assignment]
             if release_group.get("type"):
-                release_mb["release-group"]["primary-type"] = release_group["type"]
+                rg_node["primary-type"] = release_group["type"]
             if release_group.get("secondarytypes"):
-                release_mb["release-group"]["secondary-types"] = release_group[
-                    "secondarytypes"
-                ]
+                rg_node["secondary-types"] = release_group["secondarytypes"]
             if release.get("country"):
                 release_mb["country"] = release["country"]
-            if release.get("date"):
-                release_mb["date"] = release["date"]
+            release_date = _coerce_date(release.get("date"))
+            if release_date:
+                release_mb["date"] = release_date
             if release.get("medium_count") is not None:
                 release_mb["medium-count"] = release["medium_count"]
             if release.get("track_count") is not None:
                 release_mb["track-count"] = release["track_count"]
 
+            media_node: list[dict[str, object]] = release_mb["media"]  # type: ignore[assignment]
             for medium in release.get("mediums") or []:
                 media_mb: dict[str, object] = {}
                 if medium.get("format"):
@@ -213,18 +235,24 @@ def _make_releases_node(recording: dict) -> list[dict]:
                 if medium.get("position") is not None:
                     media_mb["position"] = medium["position"]
                 if medium.get("tracks"):
-                    media_mb["track"] = medium["tracks"]
-                    for track in media_mb["track"]:
-                        track["number"] = track.get("position")
-                release_mb["media"].append(media_mb)
+                    media_mb["tracks"] = medium["tracks"]
+                media_node.append(media_mb)
 
             releaseevents = release.get("releaseevents") or []
             if releaseevents:
-                for releaseevent in releaseevents:
-                    release_variant = dict(release_mb)
-                    release_variant["country"] = releaseevent.get("country", "")
-                    release_variant["date"] = releaseevent.get("date", "")
-                    release_list.append(release_variant)
+                # AcoustID may emit one release per event with different
+                # country+date. Pick a single canonical variant per release id;
+                # downstream country preference handling (selecting between
+                # release variants by preferred_countries) is the orchestrator's
+                # job, not the AcoustID parser's.
+                primary_event = releaseevents[0]
+                release_variant = dict(release_mb)
+                if primary_event.get("country"):
+                    release_variant["country"] = primary_event["country"]
+                event_date = _coerce_date(primary_event.get("date"))
+                if event_date:
+                    release_variant["date"] = event_date
+                release_list.append(release_variant)
             else:
                 release_list.append(release_mb)
     return release_list
@@ -259,10 +287,8 @@ def _parse_recording(recording: dict) -> dict | None:
     if recording.get("releasegroups"):
         recording_mb["releases"] = _make_releases_node(recording)
     if recording.get("duration") is not None:
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             recording_mb["length"] = int(recording["duration"]) * 1000
-        except (TypeError, ValueError):
-            pass
     if recording.get("sources") is not None:
         recording_mb["sources"] = recording["sources"]
     return recording_mb

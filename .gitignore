@@ -11,3 +11,12 @@ wheels/
 
 # Local environment
 .env
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Audio fixtures (provided locally; never committed)
+tests/fixtures/audio/*
+!tests/fixtures/audio/.gitkeep

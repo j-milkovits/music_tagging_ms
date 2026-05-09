@@ -1,18 +1,95 @@
+"""Lookup orchestrator.
+
+Single entry point: `lookup(items, joint, ...)` fans out AcoustID lookups,
+runs the joint matcher when joint=True, and materialises tags via
+build_release_tracks. In per-file mode, picks the best-release per file
+without joint scoring.
+"""
+
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
+from dataclasses import dataclass
 
-from .acoustid import AcoustIdClient
-from .matcher import (CLUSTER_COMPARISON_WEIGHTS, FILE_COMPARISON_WEIGHTS,
-                      aggregate_cluster_metadata, assign_files_to_release,
-                      best_match, build_release_tracks, compare_release,
-                      compare_track, get_search_score,
-                      select_release_by_country,
-                      tagged_metadata_for_assignment)
-from .models import (AudioMetadata, ClusterMatch, FileAssignment, InputFile,
-                     MatchCandidate)
-from .musicbrainz import MusicBrainzClient, artist_credit_name
-from .tagger import load_input_files, write_audio_metadata
+from .acoustid import AcoustIdClient, AcoustIdLookupResult
+from .joint_matcher import (
+    FileCandidates,
+    ReleaseAssignment,
+    ScoreFn,
+    Thresholds,
+    assign_files_to_tracks,
+    select_releases,
+)
+from .matcher import (
+    FILE_COMPARISON_WEIGHTS,
+    build_release_tracks,
+    score_file_track_on_release,
+    score_track_only_parts,
+    split_release_track_tags,
+)
+from .models import (
+    ArtistCredit,
+    AudioMetadata,
+    ReleaseCredits,
+    ReleaseTrack,
+    TrackCredits,
+)
+from .musicbrainz import MusicBrainzClient
+from .similarity import linear_combination_of_weights
+
+
+@dataclass(frozen=True, slots=True)
+class LookupItem:
+    source_id: str
+    fingerprint: str
+    duration: int
+    metadata: AudioMetadata | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MaterialisedTrack:
+    source_id: str
+    track_id: str
+    recording_id: str
+    acoustid_id: str | None
+    score: float
+    applied_track_tags: dict[str, str]
+    artists: tuple[ArtistCredit, ...]
+    credits: TrackCredits
+
+
+@dataclass(frozen=True, slots=True)
+class MaterialisedRelease:
+    release_id: str
+    score: float
+    applied_release_tags: dict[str, str]
+    release_artists: tuple[ArtistCredit, ...]
+    release_credits: ReleaseCredits
+    tracks: tuple[MaterialisedTrack, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BestGuess:
+    release_id: str | None
+    recording_id: str | None
+    acoustid_id: str | None
+    score: float
+
+
+@dataclass(frozen=True, slots=True)
+class Unmatched:
+    source_id: str
+    reason: str
+    best_guess: BestGuess | None
+
+
+@dataclass(frozen=True, slots=True)
+class LookupResult:
+    mode: str
+    assignments: tuple[MaterialisedRelease, ...]
+    unmatched: tuple[Unmatched, ...]
+    diagnostics: dict[str, int]
 
 
 class StandaloneTaggingService:
@@ -27,426 +104,381 @@ class StandaloneTaggingService:
             musicbrainz_client=self.client,
         )
 
-    def load_files(self, file_paths: list[str]) -> list[InputFile]:
-        return load_input_files(file_paths)
+    # ----- public API -----
 
-    def autotag_files(
+    def lookup(
         self,
-        file_paths: list[str],
-        output_dir: str | None = None,
-        track_match_threshold: float = 0.4,
-        write_tags: bool = True,
-        search_limit: int = 10,
-    ) -> list[FileAssignment]:
-        files = self.load_files(file_paths)
-        return self.autotag_inputs(
-            files,
-            output_dir=output_dir,
-            track_match_threshold=track_match_threshold,
-            write_tags=write_tags,
-            search_limit=search_limit,
+        items: Sequence[LookupItem],
+        joint: bool,
+        preferred_countries: Sequence[str] | None,
+        thresholds: Thresholds,
+        search_limit: int,
+    ) -> LookupResult:
+        countries = list(preferred_countries) if preferred_countries else []
+        # Fan out AcoustID lookups (sequential — ratecontrol enforces 333ms min).
+        files: list[FileCandidates] = []
+        per_file_lookup: dict[str, AcoustIdLookupResult] = {}
+        for item in items:
+            lookup = self.acoustid_client.lookup_by_fingerprint(
+                item.fingerprint, item.duration, limit=search_limit
+            )
+            per_file_lookup[item.source_id] = lookup
+            files.append(
+                FileCandidates(
+                    source_id=item.source_id,
+                    metadata=item.metadata,
+                    recordings=tuple(lookup.recordings),
+                )
+            )
+
+        if joint:
+            return self._lookup_joint(files, per_file_lookup, countries, thresholds)
+        return self._lookup_per_file(
+            files, per_file_lookup, countries, thresholds.min_per_file_score
         )
 
-    def autotag_metadata(
-        self,
-        metadata: AudioMetadata | InputFile,
-        source_id: str = "input",
-        track_match_threshold: float = 0.4,
-        search_limit: int = 10,
-        preferred_countries: list[str] | None = None,
-    ) -> FileAssignment:
-        if isinstance(metadata, InputFile):
-            item = metadata
-        else:
-            item = InputFile(path=source_id, metadata=metadata)
-        return self.autotag_inputs(
-            [item],
-            output_dir=None,
-            track_match_threshold=track_match_threshold,
-            write_tags=False,
-            search_limit=search_limit,
-            preferred_countries=preferred_countries,
-        )[0]
+    # ----- joint mode -----
 
-    def autotag_acoustid_file(
+    def _lookup_joint(
         self,
-        fingerprint: str,
-        duration: int,
-        source_id: str = "input",
-        track_match_threshold: float = 0.0,
-        search_limit: int = 10,
-        preferred_countries: list[str] | None = None,
-    ) -> FileAssignment:
-        return self.autotag_acoustid_tracks(
-            [(source_id, fingerprint, duration)],
-            track_match_threshold=track_match_threshold,
-            search_limit=search_limit,
-            preferred_countries=preferred_countries,
-        )[0]
-
-    def autotag_acoustid_tracks(
-        self,
-        items: list[tuple[str, str, int]],
-        track_match_threshold: float = 0.0,
-        search_limit: int = 10,
-        preferred_countries: list[str] | None = None,
-    ) -> list[FileAssignment]:
-        results: list[FileAssignment] = []
-        for source_id, fingerprint, duration in items:
-            lookup = self.acoustid_client.lookup_by_fingerprint(
-                fingerprint, duration, limit=search_limit
-            )
-            results.append(
-                self._resolve_acoustid_match(
-                    source_path=source_id,
-                    lookup=lookup,
-                    candidate=best_match(
-                        MatchCandidate(
-                            similarity=get_search_score(recording),
-                            payload=recording,
-                        )
-                        for recording in lookup.recordings
-                    ),
-                    threshold=track_match_threshold,
-                    no_match_reason="No AcoustID track match above threshold",
-                    preferred_countries=preferred_countries,
+        files: Sequence[FileCandidates],
+        per_file_lookup: dict[str, AcoustIdLookupResult],
+        preferred_countries: Sequence[str],
+        thresholds: Thresholds,
+    ) -> LookupResult:
+        # Use synthetic metadata for files that didn't supply any, so the
+        # joint scorer can still rank releases on country/format/track-count
+        # alone.
+        normalised: list[FileCandidates] = []
+        for f in files:
+            md = f.metadata or AudioMetadata()
+            normalised.append(
+                FileCandidates(
+                    source_id=f.source_id, metadata=md, recordings=f.recordings
                 )
             )
-        return results
 
-    def autotag_hybrid_file(
-        self,
-        metadata: AudioMetadata | InputFile,
-        fingerprint: str,
-        duration: int,
-        source_id: str = "input",
-        track_match_threshold: float = 0.0,
-        search_limit: int = 10,
-        preferred_countries: list[str] | None = None,
-    ) -> FileAssignment:
-        if isinstance(metadata, InputFile):
-            item = metadata
-        else:
-            item = InputFile(path=source_id, metadata=metadata)
-        return self.autotag_hybrid_inputs(
-            [(item, fingerprint, duration)],
-            track_match_threshold=track_match_threshold,
-            search_limit=search_limit,
-            preferred_countries=preferred_countries,
-        )[0]
+        stage1 = select_releases(normalised, preferred_countries, thresholds)
 
-    def autotag_hybrid_inputs(
-        self,
-        items: list[tuple[InputFile, str, int]],
-        track_match_threshold: float = 0.0,
-        search_limit: int = 10,
-        preferred_countries: list[str] | None = None,
-    ) -> list[FileAssignment]:
-        results: list[FileAssignment] = []
-        for file, fingerprint, duration in items:
-            lookup = self.acoustid_client.lookup_by_fingerprint(
-                fingerprint, duration, limit=search_limit
+        # Per-file AcoustID recording-id sets — invariant across releases, so
+        # compute once. Used by stage-2 to dominate any metadata heuristic
+        # when the file's fingerprint already pinpointed a specific recording.
+        file_recording_ids: dict[str, set[str]] = {
+            f.source_id: {
+                rec.get("id", "") for rec in f.recordings if rec.get("id")
+            }
+            for f in normalised
+        }
+        score_fn = _make_stage2_score_fn(file_recording_ids)
+
+        joint_releases: list[MaterialisedRelease] = []
+        rescue_targets: set[str] = set(stage1.unmatched_file_ids)
+
+        for selection in stage1.selections:
+            release_full = self.client.get_release(selection.release_id)
+            release_tracks = build_release_tracks(
+                release_full, list(preferred_countries)
             )
-            candidate = best_match(
-                MatchCandidate(
-                    similarity=compare_track(
-                        file.metadata,
-                        recording,
-                        FILE_COMPARISON_WEIGHTS,
-                        preferred_countries,
-                    ),
-                    payload=recording,
-                )
-                for recording in lookup.recordings
+            release_assignment = assign_files_to_tracks(
+                normalised,
+                selection,
+                release_tracks,
+                score_fn,
+                thresholds.min_per_file_score,
             )
-            results.append(
-                self._resolve_acoustid_match(
-                    source_path=file.path,
-                    lookup=lookup,
-                    candidate=candidate,
-                    threshold=track_match_threshold,
-                    no_match_reason="No hybrid track match above threshold",
-                    no_release_reason="Matched hybrid recording had no release attached",
-                    missing_track_reason="Matched hybrid recording was not found on the loaded release",
-                    add_acoustid_tag=True,
-                    preferred_countries=preferred_countries,
+            joint_releases.append(
+                _materialise_release(
+                    release_assignment,
+                    release_tracks,
+                    {f.source_id: per_file_lookup[f.source_id].acoustid_id for f in files},
                 )
             )
-        return results
+            rescue_targets.update(release_assignment.unmatched_file_ids)
 
-    def _resolve_acoustid_match(
+        # Per-file rescue for everything Stage 1 didn't route + Stage 2 stranded.
+        rescue_assignments: list[MaterialisedRelease] = []
+        unmatched: list[Unmatched] = []
+        for sid in sorted(rescue_targets):
+            outcome = self._best_per_file(
+                source_id=sid,
+                files=files,
+                lookup=per_file_lookup[sid],
+                preferred_countries=preferred_countries,
+                min_per_file_score=thresholds.min_per_file_score,
+            )
+            if isinstance(outcome, MaterialisedRelease):
+                rescue_assignments.append(outcome)
+            else:
+                unmatched.append(outcome)
+
+        all_assignments = tuple(joint_releases + rescue_assignments)
+        files_matched = sum(len(a.tracks) for a in all_assignments)
+
+        return LookupResult(
+            mode="joint",
+            assignments=all_assignments,
+            unmatched=tuple(unmatched),
+            diagnostics={
+                "candidate_releases_considered": stage1.candidate_releases_considered,
+                "split_count": stage1.split_count,
+                "files_in": len(files),
+                "files_matched": files_matched,
+            },
+        )
+
+    # ----- per-file mode -----
+
+    def _lookup_per_file(
         self,
-        source_path: str,
-        lookup,
-        candidate: MatchCandidate | None,
-        threshold: float,
-        no_match_reason: str,
-        no_release_reason: str = "Matched AcoustID recording had no release attached",
-        missing_track_reason: str = "Matched AcoustID recording was not found on the loaded release",
-        add_acoustid_tag: bool = False,
-        preferred_countries: list[str] | None = None,
-    ) -> FileAssignment:
+        files: Sequence[FileCandidates],
+        per_file_lookup: dict[str, AcoustIdLookupResult],
+        preferred_countries: Sequence[str],
+        min_per_file_score: float,
+    ) -> LookupResult:
+        per_release: dict[str, list[MaterialisedRelease]] = {}
+        unmatched: list[Unmatched] = []
+        for f in files:
+            outcome = self._best_per_file(
+                source_id=f.source_id,
+                files=files,
+                lookup=per_file_lookup[f.source_id],
+                preferred_countries=preferred_countries,
+                min_per_file_score=min_per_file_score,
+            )
+            if isinstance(outcome, MaterialisedRelease):
+                per_release.setdefault(outcome.release_id, []).append(outcome)
+            else:
+                unmatched.append(outcome)
+
+        # Per-file scoring is independent, but display groups files that
+        # resolved to the same release into one assignment. Tracks inside
+        # each group are sorted by source_id for determinism.
+        assignments: list[MaterialisedRelease] = []
+        for release_id in sorted(per_release):
+            group = per_release[release_id]
+            merged_tracks = tuple(
+                sorted(
+                    (mt for rel in group for mt in rel.tracks),
+                    key=lambda mt: mt.source_id,
+                )
+            )
+            mean_score = sum(mt.score for mt in merged_tracks) / len(merged_tracks)
+            assignments.append(
+                MaterialisedRelease(
+                    release_id=release_id,
+                    score=round(mean_score, 6),
+                    applied_release_tags=group[0].applied_release_tags,
+                    release_artists=group[0].release_artists,
+                    release_credits=group[0].release_credits,
+                    tracks=merged_tracks,
+                )
+            )
+
+        files_matched = sum(len(a.tracks) for a in assignments)
+        return LookupResult(
+            mode="per-file",
+            assignments=tuple(assignments),
+            unmatched=tuple(unmatched),
+            diagnostics={
+                "candidate_releases_considered": 0,
+                "split_count": 0,
+                "files_in": len(files),
+                "files_matched": files_matched,
+            },
+        )
+
+    def _best_per_file(
+        self,
+        source_id: str,
+        files: Sequence[FileCandidates],
+        lookup: AcoustIdLookupResult,
+        preferred_countries: Sequence[str],
+        min_per_file_score: float,
+    ) -> MaterialisedRelease | Unmatched:
+        file = next(f for f in files if f.source_id == source_id)
+        file_md = file.metadata or AudioMetadata()
+
         if not lookup.recordings:
-            return FileAssignment(
-                source_path=source_path,
-                matched=False,
-                similarity=0.0,
-                acoustid_id=lookup.acoustid_id,
+            return Unmatched(
+                source_id=source_id,
                 reason="AcoustID lookup returned no recordings",
+                best_guess=None,
             )
 
-        if (
-            candidate is None
-            or candidate.payload is None
-            or candidate.similarity < threshold
-        ):
-            return FileAssignment(
-                source_path=source_path,
-                matched=False,
-                similarity=candidate.similarity if candidate else 0.0,
-                acoustid_id=lookup.acoustid_id,
-                reason=no_match_reason,
+        best_score = -1.0
+        best_recording: dict | None = None
+        best_release: dict | None = None
+        for recording in lookup.recordings:
+            for release in recording.get("releases") or []:
+                score = score_file_track_on_release(
+                    file_md,
+                    recording,
+                    release,
+                    FILE_COMPARISON_WEIGHTS,
+                    list(preferred_countries) if preferred_countries else None,
+                )
+                if score > best_score:
+                    best_score = score
+                    best_recording = recording
+                    best_release = release
+
+        # No recording carried a release — degrade to AcoustID raw score.
+        if best_recording is None:
+            best_recording = max(
+                lookup.recordings, key=lambda r: float(r.get("score", 0.0))
+            )
+            best_score = float(best_recording.get("score", 0.0)) / 100.0
+            return Unmatched(
+                source_id=source_id,
+                reason="Matched recording had no release attached",
+                best_guess=BestGuess(
+                    release_id=None,
+                    recording_id=best_recording.get("id"),
+                    acoustid_id=lookup.acoustid_id,
+                    score=round(max(best_score, 0.0), 6),
+                ),
             )
 
-        recording = candidate.payload
-        releases = recording.get("releases") or []
-        selected_release = select_release_by_country(releases, preferred_countries)
-        release_id = selected_release["id"] if selected_release else None
-        if not release_id:
-            return FileAssignment(
-                source_path=source_path,
-                matched=False,
-                similarity=candidate.similarity,
-                acoustid_id=lookup.acoustid_id,
-                recording_id=recording.get("id"),
-                reason=no_release_reason,
+        if best_score < min_per_file_score:
+            return Unmatched(
+                source_id=source_id,
+                reason="No AcoustID match above threshold",
+                best_guess=BestGuess(
+                    release_id=(best_release or {}).get("id"),
+                    recording_id=best_recording.get("id"),
+                    acoustid_id=lookup.acoustid_id,
+                    score=round(max(best_score, 0.0), 6),
+                ),
             )
 
-        release = self.client.get_release(release_id)
-        release_tracks = build_release_tracks(release, preferred_countries)
+        assert best_release is not None
+        release_full = self.client.get_release(best_release["id"])
+        release_tracks = build_release_tracks(release_full, list(preferred_countries))
         matched_track = next(
             (
-                release_track
-                for release_track in release_tracks
-                if release_track.recording_id == recording.get("id")
+                rt
+                for rt in release_tracks
+                if rt.recording_id == best_recording.get("id")
             ),
             None,
         )
         if matched_track is None:
-            return FileAssignment(
-                source_path=source_path,
-                matched=False,
-                similarity=candidate.similarity,
-                acoustid_id=lookup.acoustid_id,
-                release_id=release_id,
-                recording_id=recording.get("id"),
-                reason=missing_track_reason,
-            )
-
-        applied_tags = tagged_metadata_for_assignment(matched_track)
-        if add_acoustid_tag and lookup.acoustid_id:
-            applied_tags["acoustid_id"] = lookup.acoustid_id
-
-        return FileAssignment(
-            source_path=source_path,
-            matched=True,
-            similarity=candidate.similarity,
-            acoustid_id=lookup.acoustid_id,
-            release_id=matched_track.album_id,
-            track_id=matched_track.track_id,
-            recording_id=matched_track.recording_id,
-            applied_tags=applied_tags,
-        )
-
-    def autotag_inputs(
-        self,
-        files: list[InputFile],
-        output_dir: str | None = None,
-        track_match_threshold: float = 0.4,
-        write_tags: bool = True,
-        search_limit: int = 10,
-        preferred_countries: list[str] | None = None,
-    ) -> list[FileAssignment]:
-        results: list[FileAssignment] = []
-        for file in files:
-            recordings = self.client.find_tracks(file.metadata, limit=search_limit)
-            candidate = best_match(
-                MatchCandidate(
-                    similarity=compare_track(
-                        file.metadata,
-                        recording,
-                        FILE_COMPARISON_WEIGHTS,
-                        preferred_countries,
-                    ),
-                    payload=recording,
-                )
-                for recording in recordings
-            )
-            if (
-                candidate is None
-                or candidate.payload is None
-                or candidate.similarity < track_match_threshold
-            ):
-                results.append(
-                    FileAssignment(
-                        source_path=file.path,
-                        matched=False,
-                        similarity=candidate.similarity if candidate else 0.0,
-                        reason="No track match above threshold",
-                    )
-                )
-                continue
-
-            recording = candidate.payload
-            releases = recording.get("releases") or []
-            selected_release = select_release_by_country(releases, preferred_countries)
-            release_id = selected_release["id"] if selected_release else None
-            if not release_id:
-                results.append(
-                    FileAssignment(
-                        source_path=file.path,
-                        matched=False,
-                        similarity=candidate.similarity,
-                        reason="Matched recording had no release attached",
-                    )
-                )
-                continue
-
-            release = self.client.get_release(release_id)
-            release_tracks = build_release_tracks(release, preferred_countries)
-            assignments = assign_files_to_release(
-                [file], release_tracks, threshold=track_match_threshold
-            )
-            results.extend(
-                self._materialize_assignments(
-                    assignments, output_dir=output_dir, write_tags=write_tags
-                )
-            )
-        return results
-
-    def autotag_cluster(
-        self,
-        file_paths: list[str],
-        output_dir: str | None = None,
-        cluster_match_threshold: float = 0.5,
-        track_match_threshold: float = 0.4,
-        write_tags: bool = True,
-        search_limit: int = 10,
-    ) -> ClusterMatch:
-        files = self.load_files(file_paths)
-        return self.autotag_cluster_inputs(
-            files,
-            output_dir=output_dir,
-            cluster_match_threshold=cluster_match_threshold,
-            track_match_threshold=track_match_threshold,
-            write_tags=write_tags,
-            search_limit=search_limit,
-        )
-
-    def autotag_cluster_metadata(
-        self,
-        items: list[InputFile],
-        cluster_match_threshold: float = 0.5,
-        track_match_threshold: float = 0.4,
-        search_limit: int = 10,
-        preferred_countries: list[str] | None = None,
-    ) -> ClusterMatch:
-        return self.autotag_cluster_inputs(
-            items,
-            output_dir=None,
-            cluster_match_threshold=cluster_match_threshold,
-            track_match_threshold=track_match_threshold,
-            write_tags=False,
-            search_limit=search_limit,
-            preferred_countries=preferred_countries,
-        )
-
-    def autotag_cluster_inputs(
-        self,
-        files: list[InputFile],
-        output_dir: str | None = None,
-        cluster_match_threshold: float = 0.5,
-        track_match_threshold: float = 0.4,
-        write_tags: bool = True,
-        search_limit: int = 10,
-        preferred_countries: list[str] | None = None,
-    ) -> ClusterMatch:
-        cluster_metadata = aggregate_cluster_metadata(files)
-        releases = self.client.find_releases(cluster_metadata, limit=search_limit)
-        candidate = best_match(
-            MatchCandidate(
-                similarity=compare_release(
-                    cluster_metadata,
-                    release,
-                    CLUSTER_COMPARISON_WEIGHTS,
-                    preferred_countries,
+            return Unmatched(
+                source_id=source_id,
+                reason="Matched recording was not found on the loaded release",
+                best_guess=BestGuess(
+                    release_id=best_release.get("id"),
+                    recording_id=best_recording.get("id"),
+                    acoustid_id=lookup.acoustid_id,
+                    score=round(max(best_score, 0.0), 6),
                 ),
-                payload=release,
             )
-            for release in releases
-        )
-        if (
-            candidate is None
-            or candidate.payload is None
-            or candidate.similarity < cluster_match_threshold
-        ):
-            raise ValueError("No release match above threshold")
 
-        release = self.client.get_release(candidate.payload["id"])
-        release_tracks = build_release_tracks(release, preferred_countries)
-        assignments = assign_files_to_release(
-            files, release_tracks, threshold=track_match_threshold
-        )
-        materialized = self._materialize_assignments(
-            assignments, output_dir=output_dir, write_tags=write_tags
-        )
-        return ClusterMatch(
-            release_id=release["id"],
-            similarity=candidate.similarity,
-            release_title=release.get("title", ""),
-            release_artist=artist_credit_name(release.get("artist-credit", [])),
-            assignments=materialized,
+        release_tags, track_tags = split_release_track_tags(matched_track)
+        score = round(max(best_score, 0.0), 6)
+        return MaterialisedRelease(
+            release_id=matched_track.release_id,
+            score=score,
+            applied_release_tags=release_tags,
+            release_artists=matched_track.release_artists,
+            release_credits=matched_track.release_credits,
+            tracks=(
+                MaterialisedTrack(
+                    source_id=source_id,
+                    track_id=matched_track.track_id,
+                    recording_id=matched_track.recording_id,
+                    acoustid_id=lookup.acoustid_id,
+                    score=score,
+                    applied_track_tags=track_tags,
+                    artists=matched_track.artists,
+                    credits=matched_track.track_credits,
+                ),
+            ),
         )
 
-    def _materialize_assignments(
-        self,
-        assignments: list[tuple[InputFile, object | None, float]],
-        output_dir: str | None,
-        write_tags: bool,
-        lookup_info_by_path: dict[str, dict[str, str | None]] | None = None,
-    ) -> list[FileAssignment]:
-        results: list[FileAssignment] = []
-        for file, release_track, similarity in assignments:
-            lookup_info = (lookup_info_by_path or {}).get(file.path, {})
-            if release_track is None:
-                results.append(
-                    FileAssignment(
-                        source_path=file.path,
-                        matched=False,
-                        similarity=similarity,
-                        acoustid_id=lookup_info.get("acoustid_id"),
-                        reason="No album track assignment above threshold",
-                    )
-                )
-                continue
 
-            tags = tagged_metadata_for_assignment(release_track)
-            target_path = None
-            if write_tags:
-                target_path = write_audio_metadata(
-                    file.path, tags, output_dir=output_dir
-                )
-            results.append(
-                FileAssignment(
-                    source_path=file.path,
-                    matched=True,
-                    similarity=similarity,
-                    acoustid_id=lookup_info.get("acoustid_id"),
-                    target_path=target_path,
-                    release_id=release_track.album_id,
-                    track_id=release_track.track_id,
-                    recording_id=release_track.recording_id,
-                    applied_tags=tags,
-                )
+def _make_stage2_score_fn(
+    file_recording_ids: dict[str, set[str]],
+) -> ScoreFn:
+    """Build a score function for stage-2 bipartite matching.
+
+    Strong rule: a file whose AcoustID candidate set includes the track's
+    recording id wins that track outright (score 1.0). Otherwise fall back to
+    the existing metadata similarity over title/artist/length. Files that
+    supplied no metadata return 0 so they don't accidentally outscore a real
+    recording-id match elsewhere.
+    """
+    def score_fn(file: FileCandidates, track: ReleaseTrack) -> float:
+        if track.recording_id in file_recording_ids.get(file.source_id, set()):
+            return 1.0
+        file_md = file.metadata or AudioMetadata()
+        if not (file_md.title or file_md.artist or file_md.length_ms):
+            return 0.0
+        synthetic_track = {
+            "title": track.metadata.title,
+            "artist-credit": [{"name": track.metadata.artist}],
+            "length": track.metadata.length_ms,
+        }
+        parts = score_track_only_parts(
+            file_md, synthetic_track, FILE_COMPARISON_WEIGHTS
+        )
+        return linear_combination_of_weights(parts)
+    return score_fn
+
+
+def _materialise_release(
+    release_assignment: ReleaseAssignment,
+    release_tracks: Sequence[ReleaseTrack],
+    acoustid_id_by_source: dict[str, str | None],
+) -> MaterialisedRelease:
+    track_by_id = {rt.track_id: rt for rt in release_tracks}
+    matched_tracks: list[MaterialisedTrack] = []
+    release_tags: dict[str, str] = {}
+    release_artists: tuple[ArtistCredit, ...] = ()
+    release_credits: ReleaseCredits = ReleaseCredits()
+    for fa in release_assignment.assignments:
+        track = track_by_id.get(fa.track_id)
+        if track is None:
+            continue
+        release_part, track_part = split_release_track_tags(track)
+        if not release_tags:
+            release_tags = release_part
+            release_artists = track.release_artists
+            release_credits = track.release_credits
+        matched_tracks.append(
+            MaterialisedTrack(
+                source_id=fa.source_id,
+                track_id=fa.track_id,
+                recording_id=fa.recording_id,
+                acoustid_id=acoustid_id_by_source.get(fa.source_id),
+                score=fa.score,
+                applied_track_tags=track_part,
+                artists=track.artists,
+                credits=track.track_credits,
             )
-        return results
+        )
+
+    mean_score = (
+        sum(t.score for t in matched_tracks) / len(matched_tracks)
+        if matched_tracks
+        else 0.0
+    )
+    return MaterialisedRelease(
+        release_id=release_assignment.release_id,
+        score=round(mean_score, 6),
+        applied_release_tags=release_tags,
+        release_artists=release_artists,
+        release_credits=release_credits,
+        tracks=tuple(matched_tracks),
+    )
+
+
+__all__ = [
+    "BestGuess",
+    "LookupItem",
+    "LookupResult",
+    "MaterialisedTrack",
+    "MaterialisedRelease",
+    "StandaloneTaggingService",
+    "Unmatched",
+]

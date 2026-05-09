@@ -18,7 +18,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import defaultdict
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
