@@ -221,3 +221,69 @@ def test_lookup_per_file_carmen(client: TestClient, carmen_items: list[dict]) ->
             assert track["metadata"]["artists"]
     assert body["unmatched"] == []
     assert body["diagnostics"]["files_matched"] == 3
+
+
+# ----- Disc (DiscID/TOC) lookup -----
+
+# Verified TOC for Nirvana — Nevermind (CD, 12 tracks).
+_NEVERMIND_TOC = (
+    "1+12+267257+150+22767+41887+58317+72102+91375"
+    "+104652+115380+132165+143932+159870+174597"
+)
+
+
+def test_disc_lookup_requires_bearer(client: TestClient) -> None:
+    res = client.post("/api/disc", json={"toc": _NEVERMIND_TOC})
+    assert res.status_code == 401
+
+
+def test_disc_lookup_requires_discid_or_toc(client: TestClient) -> None:
+    res = client.post(
+        "/api/disc",
+        json={"discid": "-", "toc": ""},
+        headers={"Authorization": "Bearer test-bearer-token"},
+    )
+    assert res.status_code == 400
+
+
+@pytest.mark.vcr(
+    cassette_library_dir=str(CASSETTE_DIR),
+)
+def test_disc_lookup_returns_release_and_candidates(client: TestClient) -> None:
+    res = client.post(
+        "/api/disc",
+        json={
+            "discid": "-",
+            "toc": _NEVERMIND_TOC,
+            "preferred_release_countries": ["DE", "XE", "XW"],
+        },
+        headers={"Authorization": "Bearer test-bearer-token"},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+
+    # Lightweight candidate list of all matching pressings.
+    assert len(body["candidates"]) > 1
+    first_candidate = body["candidates"][0]
+    assert first_candidate["release_id"]
+    assert first_candidate["title"] == "Nevermind"
+    assert first_candidate["artist"] == "Nirvana"
+    assert first_candidate["track_count"] == 12
+
+    # Best release fully materialised — same rich shape as /api/lookup.
+    rel = body["release"]
+    assert rel is not None
+    assert body["reason"] is None
+    assert rel["release_id"]
+    assert rel["metadata"]["title"] == "Nevermind"
+    assert rel["metadata"]["artists"][0]["name"] == "Nirvana"
+    assert rel["metadata"].get("cover_art_url", "").startswith(
+        "http://coverartarchive.org/release/"
+    )
+    assert len(rel["tracks"]) == 12
+    track = rel["tracks"][0]
+    assert track.get("title")
+    assert track["artists"][0]["name"] == "Nirvana"
+    # No file-match fields leak into the disc response.
+    assert "score" not in track
+    assert "source_id" not in track

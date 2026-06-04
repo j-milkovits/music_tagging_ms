@@ -4,6 +4,7 @@ import hmac
 import logging
 import os
 import traceback
+import urllib.error
 from typing import Literal
 
 from dotenv import load_dotenv
@@ -21,7 +22,12 @@ from .models import (
     TrackCredits,
     Work,
 )
-from .service import LookupItem, LookupResult, StandaloneTaggingService
+from .service import (
+    DiscLookupResult,
+    LookupItem,
+    LookupResult,
+    StandaloneTaggingService,
+)
 
 load_dotenv(override=True)
 
@@ -40,6 +46,7 @@ app = FastAPI(
     openapi_tags=[
         {"name": "health", "description": "Service health and version probes."},
         {"name": "lookup", "description": "Joint or per-file AcoustID lookup."},
+        {"name": "disc", "description": "CD DiscID/TOC lookup (no fingerprint)."},
     ],
 )
 
@@ -339,6 +346,69 @@ class LookupResponse(BaseModel):
     diagnostics: LookupDiagnostics
 
 
+class DiscLookupRequest(BaseModel):
+    discid: str = Field(
+        default="-",
+        description="MusicBrainz DiscID, or '-' for a TOC-only fuzzy lookup.",
+    )
+    toc: str = Field(
+        default="",
+        description=(
+            "MusicBrainz `toc` string (e.g. `1+12+267257+150+...`). Required "
+            "unless a concrete `discid` is given."
+        ),
+    )
+    preferred_release_countries: list[str] = Field(
+        default_factory=list,
+        description="Ordered ISO-3166-1 codes used to pick among matching pressings.",
+    )
+    metadata: AudioMetadataPayload | None = Field(
+        default=None,
+        description="Optional; ranks candidate pressings when re-tagging an existing rip.",
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "discid": "-",
+                "toc": "1+12+267257+150+22767+41887+58317+72102+91375+104652+115380+132165+143932+159870+174597",
+                "preferred_release_countries": ["DE", "XE", "XW"],
+            }
+        }
+    }
+
+
+class DiscCandidatePayload(BaseModel):
+    release_id: str
+    title: str
+    artist: str
+    country: str
+    date: str
+    barcode: str
+    track_count: int
+
+
+class DiscReleasePayload(BaseModel):
+    release_id: str
+    metadata: ReleaseMetadataPayload
+    tracks: list[TrackMetadataPayload]
+
+
+class DiscLookupResponse(BaseModel):
+    release: DiscReleasePayload | None = Field(
+        default=None,
+        description="Best-matching release fully materialised, or null if none matched.",
+    )
+    candidates: list[DiscCandidatePayload] = Field(
+        default_factory=list,
+        description="All releases matching the disc, as lightweight summaries.",
+    )
+    reason: str | None = Field(
+        default=None,
+        description="Why no release was returned (when `release` is null).",
+    )
+
+
 # ----- Endpoints -----
 
 
@@ -405,6 +475,48 @@ def lookup(req: LookupRequest) -> dict:
     return _serialize_lookup_result(result)
 
 
+@app.post(
+    "/api/disc",
+    tags=["disc"],
+    response_model=DiscLookupResponse,
+    dependencies=[Depends(require_bearer)],
+    summary="CD DiscID/TOC lookup",
+)
+def lookup_disc(req: DiscLookupRequest) -> dict:
+    if req.discid.strip() in ("", "-") and not req.toc.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Provide a DiscID or a TOC (or both).",
+        )
+    try:
+        result = service.lookup_disc(
+            discid=req.discid,
+            toc=req.toc,
+            preferred_countries=req.preferred_release_countries,
+            metadata=(
+                AudioMetadata(**req.metadata.model_dump()) if req.metadata else None
+            ),
+        )
+    except urllib.error.HTTPError as exc:
+        if exc.code == 400:
+            raise HTTPException(
+                status_code=400, detail="Invalid DiscID or TOC"
+            ) from exc
+        logger.exception("disc lookup failed")
+        raise HTTPException(
+            status_code=500,
+            detail={"error": str(exc), "traceback": traceback.format_exc()},
+        ) from exc
+    except Exception as exc:
+        logger.exception("disc lookup failed")
+        raise HTTPException(
+            status_code=500,
+            detail={"error": str(exc), "traceback": traceback.format_exc()},
+        ) from exc
+
+    return _serialize_disc_result(result)
+
+
 def _serialize_lookup_result(result: LookupResult) -> dict:
     return {
         "mode": result.mode,
@@ -457,6 +569,46 @@ def _serialize_lookup_result(result: LookupResult) -> dict:
             for u in result.unmatched
         ],
         "diagnostics": result.diagnostics,
+    }
+
+
+def _serialize_disc_result(result: DiscLookupResult) -> dict:
+    release: dict | None = None
+    if result.release is not None:
+        rel = result.release
+        release = {
+            "release_id": rel.release_id,
+            "metadata": {
+                **_serialize_release_tags(rel.applied_release_tags),
+                "artists": [
+                    _serialize_artist_credit(ac) for ac in rel.release_artists
+                ],
+                **_serialize_release_credits(rel.release_credits),
+            },
+            "tracks": [
+                {
+                    **_serialize_applied_tags(t.applied_track_tags),
+                    "artists": [_serialize_artist_credit(ac) for ac in t.artists],
+                    **_serialize_track_credits(t.credits),
+                }
+                for t in rel.tracks
+            ],
+        }
+    return {
+        "release": release,
+        "candidates": [
+            {
+                "release_id": c.release_id,
+                "title": c.title,
+                "artist": c.artist,
+                "country": c.country,
+                "date": c.date,
+                "barcode": c.barcode,
+                "track_count": c.track_count,
+            }
+            for c in result.candidates
+        ],
+        "reason": result.reason,
     }
 
 

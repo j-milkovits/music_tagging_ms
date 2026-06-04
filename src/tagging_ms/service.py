@@ -18,12 +18,14 @@ from .joint_matcher import (
     ReleaseAssignment,
     ScoreFn,
     Thresholds,
+    _country_rank,
     assign_files_to_tracks,
     select_releases,
 )
 from .matcher import (
     FILE_COMPARISON_WEIGHTS,
     build_release_tracks,
+    compare_release_parts,
     get_search_score,
     score_file_track_on_release,
     score_track_only_parts,
@@ -36,7 +38,7 @@ from .models import (
     ReleaseTrack,
     TrackCredits,
 )
-from .musicbrainz import MusicBrainzClient
+from .musicbrainz import MusicBrainzClient, artist_credit_name
 from .similarity import linear_combination_of_weights
 
 
@@ -93,6 +95,47 @@ class LookupResult:
     diagnostics: dict[str, int]
 
 
+# ----- CD-ripping (DiscID/TOC) result models -----
+# No fingerprint, no AcoustID, no scoring — the disc match is authoritative, so
+# tracks carry metadata only (no source_id/score/acoustid_id).
+
+
+@dataclass(frozen=True, slots=True)
+class DiscCandidate:
+    release_id: str
+    title: str
+    artist: str
+    country: str
+    date: str
+    barcode: str
+    track_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class DiscTrack:
+    track_id: str
+    recording_id: str
+    applied_track_tags: dict[str, str]
+    artists: tuple[ArtistCredit, ...]
+    credits: TrackCredits
+
+
+@dataclass(frozen=True, slots=True)
+class DiscRelease:
+    release_id: str
+    applied_release_tags: dict[str, str]
+    release_artists: tuple[ArtistCredit, ...]
+    release_credits: ReleaseCredits
+    tracks: tuple[DiscTrack, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DiscLookupResult:
+    release: DiscRelease | None
+    candidates: tuple[DiscCandidate, ...]
+    reason: str | None = None
+
+
 class StandaloneTaggingService:
     def __init__(
         self,
@@ -136,6 +179,125 @@ class StandaloneTaggingService:
             return self._lookup_joint(files, per_file_lookup, countries, thresholds)
         return self._lookup_per_file(
             files, per_file_lookup, countries, thresholds.min_per_file_score
+        )
+
+    # ----- CD-ripping (DiscID/TOC) mode -----
+
+    def lookup_disc(
+        self,
+        discid: str,
+        toc: str,
+        preferred_countries: Sequence[str] | None,
+        metadata: AudioMetadata | None,
+    ) -> DiscLookupResult:
+        """Resolve a CD by DiscID/TOC to MusicBrainz release metadata.
+
+        A disc usually matches several releases (pressings). We return the
+        single best release fully materialised, plus a lightweight `candidates`
+        list of every match so the caller can pick a different pressing.
+        """
+        countries = list(preferred_countries) if preferred_countries else []
+        payload = self.client.get_release_by_discid(discid, toc)
+        releases = payload.get("releases") or []
+        if not releases:
+            return DiscLookupResult(
+                release=None,
+                candidates=(),
+                reason="No MusicBrainz release found for this disc",
+            )
+
+        candidates = tuple(self._disc_candidate(r) for r in releases)
+        best = self._rank_disc_releases(releases, countries, metadata)
+
+        release_full = self.client.get_release(best["id"])
+        cover_art = self.client.get_release_cover_art(best["id"])
+        release_tracks = build_release_tracks(release_full, countries, cover_art)
+        disc_release = self._materialise_disc_release(best["id"], release_tracks)
+        return DiscLookupResult(
+            release=disc_release, candidates=candidates, reason=None
+        )
+
+    @staticmethod
+    def _disc_candidate(release: dict) -> DiscCandidate:
+        media = release.get("media") or []
+        track_count = sum(int(m.get("track-count") or 0) for m in media)
+        return DiscCandidate(
+            release_id=release.get("id", ""),
+            title=release.get("title", ""),
+            artist=artist_credit_name(release.get("artist-credit", [])),
+            country=release.get("country", "") or "",
+            date=release.get("date", "") or "",
+            barcode=release.get("barcode") or "",
+            track_count=track_count,
+        )
+
+    @staticmethod
+    def _rank_disc_releases(
+        releases: Sequence[dict],
+        countries: Sequence[str],
+        metadata: AudioMetadata | None,
+    ) -> dict:
+        """Pick the best candidate release dict.
+
+        With caller metadata (re-tagging), rank by the existing release scorer
+        (title/date/country/type/track-count); otherwise prefer the
+        preferred-country pressing, then the earliest date, deterministically.
+        """
+        country_list = list(countries) if countries else None
+        if metadata is not None:
+            def meta_key(release: dict) -> tuple:
+                score = linear_combination_of_weights(
+                    compare_release_parts(
+                        metadata, release, FILE_COMPARISON_WEIGHTS, country_list
+                    )
+                )
+                return (
+                    -score,
+                    _country_rank(release, countries),
+                    release.get("date") or "9999",
+                    release.get("id", ""),
+                )
+
+            return min(releases, key=meta_key)
+
+        return min(
+            releases,
+            key=lambda release: (
+                _country_rank(release, countries),
+                release.get("date") or "9999",
+                release.get("id", ""),
+            ),
+        )
+
+    @staticmethod
+    def _materialise_disc_release(
+        release_id: str, release_tracks: Sequence[ReleaseTrack]
+    ) -> DiscRelease:
+        tracks: list[DiscTrack] = []
+        release_tags: dict[str, str] = {}
+        release_artists: tuple[ArtistCredit, ...] = ()
+        release_credits: ReleaseCredits = ReleaseCredits()
+        for rt in release_tracks:
+            release_part, track_part = split_release_track_tags(rt)
+            if not release_tags:
+                release_tags = release_part
+                release_artists = rt.release_artists
+                release_credits = rt.release_credits
+            tracks.append(
+                DiscTrack(
+                    track_id=rt.track_id,
+                    recording_id=rt.recording_id,
+                    applied_track_tags=track_part,
+                    artists=rt.artists,
+                    credits=rt.track_credits,
+                )
+            )
+        return DiscRelease(
+            release_id=release_id,
+            applied_release_tags=release_tags,
+            release_artists=release_artists,
+            release_credits=release_credits,
+            tracks=tuple(tracks),
         )
 
     # ----- joint mode -----

@@ -144,6 +144,31 @@ class MusicBrainzClient:
             "cover_art_thumb_url": str(thumb),
         }
 
+    def get_release_by_discid(self, discid: str, toc: str) -> dict:
+        """Look up releases by CD DiscID and/or TOC (table of contents).
+
+        Used by the CD-ripping flow, which has no fingerprint. Pass a real
+        DiscID, or ``-`` (the default when empty) to do a fuzzy TOC-only
+        lookup. Both forms return a top-level ``releases`` array. The
+        ``inc=artist-credits`` keeps the summaries cheap while still carrying
+        artist names for the candidate list. Returns ``{}`` when MusicBrainz
+        has no release for the disc (404 / CD stub); a malformed DiscID or TOC
+        surfaces as a 400 ``HTTPError`` for the caller to translate.
+        """
+        disc = discid.strip() or "-"
+        # The TOC's `+` separators are URL-encoded spaces; accept either form
+        # and let urlencode re-encode the spaces back to `+` on the wire.
+        toc_value = " ".join(toc.replace("+", " ").split())
+        params = {"fmt": "json", "inc": "artist-credits"}
+        if toc_value:
+            params["toc"] = toc_value
+        try:
+            return self._get_json(f"/discid/{disc}", params)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return {}
+            raise
+
     def get_recording(self, recording_id: str) -> dict:
         return self._get_json(
             f"/recording/{recording_id}",

@@ -49,6 +49,7 @@ Interactive docs at `/docs` (Swagger) and `/redoc`.
 | GET    | `/api/health`  | none     | Liveness probe                           |
 | GET    | `/api/version` | none     | Service name, version, baked git sha     |
 | POST   | `/api/lookup`  | Bearer   | Joint or per-file AcoustID lookup        |
+| POST   | `/api/disc`    | Bearer   | CD DiscID/TOC lookup (no fingerprint)    |
 
 ### Auth
 
@@ -206,6 +207,52 @@ Notes:
   release-group, joined with `; `.
 - Empty flat tags are omitted from the response (rather than emitted as `null`
   or empty string); credit arrays are always present and may be empty.
+
+### `POST /api/disc`
+
+CD-ripping lookup: identify a disc by its MusicBrainz **DiscID** and/or **TOC**
+(table of contents) — no fingerprint, no AcoustID. Pass a concrete `discid`, or
+`-` to do a TOC-only fuzzy lookup. `metadata` is optional and only used to rank
+candidate pressings when re-tagging an existing rip.
+
+Request:
+
+```jsonc
+{
+  "discid": "-",                              // or a real DiscID; "-" = TOC-only
+  "toc": "1+12+267257+150+22767+41887+...",   // MusicBrainz `toc` string
+  "preferred_release_countries": ["DE", "XE", "XW"],
+  "metadata": { "release": "Nevermind" }      // optional, ranks pressings
+}
+```
+
+A disc usually matches several releases (pressings/countries). The response
+returns the single **best** release fully materialised — the same
+`metadata` + `tracks` shape as an `/api/lookup` assignment, but without
+file-match fields (`source_id`/`score`) since the disc match is authoritative —
+plus a lightweight `candidates` list of every match so the caller can pick a
+different pressing (then there is nothing more to fetch; the chosen one is
+already the `release`, or re-query with that pressing's data).
+
+```jsonc
+{
+  "release": {
+    "release_id": "...",
+    "metadata": { "title": "Nevermind", "artists": [ ... ], "cover_art_url": "...", ... },
+    "tracks": [ { "title": "Smells Like Teen Spirit", "tracknumber": "1", "artists": [ ... ], ... } ]
+  },
+  "candidates": [
+    { "release_id": "...", "title": "Nevermind", "artist": "Nirvana",
+      "country": "DE", "date": "1991", "barcode": "...", "track_count": 12 }
+  ],
+  "reason": null                              // set when `release` is null (no match)
+}
+```
+
+Best-release ranking: by `preferred_release_countries`, then (if `metadata` is
+supplied) by release-title/date similarity, then earliest date — deterministic.
+Invalid DiscID/TOC → `400`; no MusicBrainz match (or a CD stub) → `release: null`
+with a `reason`.
 
 ## Make targets
 
