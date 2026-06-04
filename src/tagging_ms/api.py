@@ -237,6 +237,8 @@ class ReleaseMetadataPayload(BaseModel):
     catalognumber: str | None = None
     barcode: str | None = None
     script: str | None = None
+    cover_art_url: str | None = None
+    cover_art_thumb_url: str | None = None
     artists: list[ArtistCreditPayload] = Field(
         default_factory=list,
         description="Structured release artist credits.",

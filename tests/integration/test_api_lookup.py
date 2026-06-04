@@ -111,6 +111,11 @@ def test_lookup_joint_carmen(client: TestClient, carmen_items: list[dict]) -> No
     assert release_md.get("label")
     assert release_md.get("barcode")
     assert release_md.get("musicbrainz_id")
+    # Release-level cover art validated against the Cover Art Archive.
+    assert release_md.get("cover_art_url", "").startswith(
+        "http://coverartarchive.org/release/"
+    )
+    assert release_md.get("cover_art_thumb_url", "").endswith("-250.jpg")
 
     sample_track = rel["tracks"][0]
     track_md = sample_track["metadata"]
@@ -124,8 +129,12 @@ def test_lookup_joint_carmen(client: TestClient, carmen_items: list[dict]) -> No
     assert track_md["works"]
     assert any(w.get("musicbrainz_id") for w in track_md["works"])
     assert track_md.get("genre")
+    # Cover art is release-level only — not duplicated onto every track.
+    assert "cover_art_url" not in track_md
     # acoustid_id is top-level on each matched track, not in metadata.
     assert sample_track["acoustid_id"]
+    # Score reflects real AcoustID fingerprint confidence, not a hardcoded 1.0.
+    assert 0.0 < sample_track["score"] <= 1.0
 
     # Structured artist credits live inside the respective metadata block.
     release_artists = release_md["artists"]

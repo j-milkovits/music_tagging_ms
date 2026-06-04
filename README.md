@@ -71,7 +71,7 @@ Request:
       "metadata": {                          // optional, refines joint scoring
         "title": "Track 1",
         "artist": "Artist 1",
-        "album": "Album 1",
+        "release": "Album 1",
         "length_ms": 287000
       }
     }
@@ -89,56 +89,123 @@ Request:
 
 Response:
 
+Matched files are grouped by release under `assignments`. Each assignment
+carries release-level `metadata` plus a `tracks` array, and each matched track
+carries its own `metadata`. Per-file mode (`joint: false`) produces the same
+shape — just one track per assignment. Files no release could claim land in
+`unmatched`.
+
 ```jsonc
 {
   "mode": "joint",
   "assignments": [
     {
-      "release_id": "...",
-      "joint_score": 17.42,
-      "files": [
+      "release_id": "b9608c76-ae35-372d-9e05-af2c5e1caec3",
+      "score": 0.97,                          // mean of tracks[].score
+      "metadata": {
+        "title": "Carmen-Fantasie",
+        "date": "1993",
+        "originaldate": "1993",
+        "country": "DE",
+        "type": "album",
+        "musicbrainz_id": "b9608c76-ae35-372d-9e05-af2c5e1caec3",
+        "musicbrainz_release_group_id": "...",
+        "label": "Deutsche Grammophon",
+        "catalognumber": "...",
+        "barcode": "028943754422",
+        "script": "Latn",
+        // front cover validated against the Cover Art Archive,
+        // omitted entirely when the release has no art:
+        "cover_art_url": "http://coverartarchive.org/release/b9608c76-.../front.jpg",
+        "cover_art_thumb_url": "http://coverartarchive.org/release/b9608c76-.../front-250.jpg",
+        // structured release-artist credits (reconstruct the display
+        // string by joining `name`s; collect `musicbrainz_artistid` for IDs):
+        "artists": [
+          { "name": "Anne-Sophie Mutter", "sort_name": "Mutter, Anne-Sophie",
+            "musicbrainz_artistid": "...", "type": "Person", "disambiguation": "" }
+        ],
+        // release-level relationship credits (each an array of credits):
+        "producers": [], "engineers": [], "mixers": [],
+        "conductors": [], "arrangers": [], "performers": []
+      },
+      "tracks": [
         {
           "source_id": "01.wav",
-          "track_id": "...", "recording_id": "...",
-          "score": 0.93,
-          "applied_tags": { /* full tag set, see below */ }
+          "track_id": "...",
+          "recording_id": "...",
+          "acoustid_id": "...",
+          "score": 0.97,                       // real AcoustID/metadata confidence
+          "metadata": {
+            "title": "Carmen-Fantasie, Op. 25",
+            "tracknumber": "1", "totaltracks": "12",
+            "discnumber": "1", "totaldiscs": "1",
+            "isrc": "...", "length_ms": 287000, "media": "CD",
+            "musicbrainz_trackid": "...", "musicbrainz_recordingid": "...",
+            "genre": "Classical",
+            "artists": [ { "name": "Anne-Sophie Mutter", "...": "..." } ],
+            // track-level relationship credits + works:
+            "composers": [], "lyricists": [], "writers": [], "arrangers": [],
+            "producers": [], "engineers": [], "mixers": [], "conductors": [],
+            "performers": [],
+            "works": [ { "title": "...", "musicbrainz_id": "..." } ]
+          }
         }
-      ],
-      "unmatched_files": []
+      ]
     }
   ],
-  "fallback_per_file": [],
+  "unmatched": [
+    {
+      "source_id": "07.wav",
+      "reason": "No AcoustID match above threshold",
+      "best_guess": {
+        "release_id": "...", "recording_id": "...",
+        "acoustid_id": "...", "score": 0.22
+      }
+    }
+  ],
   "diagnostics": {
     "candidate_releases_considered": 14,
     "split_count": 1,
     "files_in": 8,
-    "files_matched": 8
+    "files_matched": 7
   }
 }
 ```
 
-`assignments` is empty in `per-file` mode; everything lands in `fallback_per_file`.
+### Metadata fields
 
-### Applied tags
+Both `metadata` blocks are derived from the MusicBrainz release fetch
+(`recording-level-rels`, `work-level-rels`, `work-rels`, `artist-rels`,
+`release-rels`, `genres`).
 
-Each match payload includes a rich tag set derived from the MusicBrainz release
-fetch (`recording-level-rels`, `work-level-rels`, `work-rels`, `artist-rels`,
-`release-rels`, `genres`):
+Release `metadata` (flat tags + structured credit arrays):
 
-- Track tags: `title`, `artist`, `tracknumber`, `totaltracks`, `discnumber`,
-  `totaldiscs`, `isrc`, `length_ms`, `media`
-- Album tags: `album`, `albumartist`, `date`, `originaldate`, `releasetype`,
-  `releasecountry`, `label`, `catalognumber`, `barcode`, `script`
-- MusicBrainz IDs: `musicbrainz_albumid`, `musicbrainz_trackid`,
-  `musicbrainz_recordingid`, `musicbrainz_releasegroupid`,
-  `musicbrainz_artistid`, `musicbrainz_albumartistid`, `musicbrainz_workid`,
-  `acoustid_id`
-- Relationships: `work`, `composer`, `lyricist`, `writer`, `arranger`,
-  `producer`, `engineer`, `mixer`, `conductor`, `performers`
-- `genre` (top-N MB genres aggregated across recording, release, release-group)
+- Flat tags: `title`, `date`, `originaldate`, `country`, `type`, `label`,
+  `catalognumber`, `barcode`, `script`, `cover_art_url`, `cover_art_thumb_url`,
+  `musicbrainz_id`, `musicbrainz_release_group_id`
+- Credit arrays: `artists`, `producers`, `engineers`, `mixers`, `conductors`,
+  `arrangers`, `performers`
 
-Multi-valued fields are joined with `; `. Empty fields are omitted from the
-response (rather than emitted as `null` or empty string).
+Track `metadata` (flat tags + structured credit arrays):
+
+- Flat tags: `title`, `tracknumber`, `totaltracks`, `discnumber`, `totaldiscs`,
+  `isrc`, `length_ms`, `media`, `genre`, `musicbrainz_trackid`,
+  `musicbrainz_recordingid`
+- Credit arrays: `artists`, `composers`, `lyricists`, `writers`, `arrangers`,
+  `producers`, `engineers`, `mixers`, `conductors`, `performers`, `works`
+
+Notes:
+
+- The release/track artist is intentionally **not** emitted as a flat string —
+  reconstruct it from the `artists` array (join `name`s for display, collect
+  `musicbrainz_artistid` for the IDs).
+- Each credit entry has `name`, `sort_name`, `musicbrainz_artistid`, `type`,
+  `disambiguation` (`performers` also carry `attributes`); `works` entries have
+  `title` and `musicbrainz_id`.
+- `genre` is the top-N MB genres aggregated across recording, release, and
+  release-group, joined with `; `.
+- Empty flat tags are omitted from the response (rather than emitted as `null`
+  or empty string); credit arrays are always present and may be empty.
 
 ## Make targets
 
@@ -189,8 +256,11 @@ cassettes can be committed safely.
 - The service does not write files. It returns the resolved MusicBrainz tags
   for the client to apply locally.
 - AcoustID lookups require `TAGGING_MS_ACOUSTID_API_KEY` in the environment.
-- Per-host rate limiting (1 s for MusicBrainz, 333 ms for AcoustID) is enforced
-  by `tagging_ms.ratecontrol`.
+- Release cover art is fetched and validated against the
+  [Cover Art Archive](https://coverartarchive.org/); releases without art simply
+  omit the `cover_art_*` fields.
+- Per-host rate limiting (1 s for MusicBrainz, 333 ms for AcoustID, 1 s for the
+  Cover Art Archive) is enforced by `tagging_ms.ratecontrol`.
 
 ## License
 

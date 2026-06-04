@@ -198,6 +198,7 @@ def _out_of_backoff(hostkey: HostKey) -> None:
 
 set_minimum_delay_for_url("https://musicbrainz.org", 1000)
 set_minimum_delay_for_url("https://api.acoustid.org", 333)
+set_minimum_delay_for_url("https://coverartarchive.org", 1000)
 
 
 TEMP_ERRORS_RETRIES = 5

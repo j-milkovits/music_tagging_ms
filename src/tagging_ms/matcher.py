@@ -158,7 +158,11 @@ def score_track_only_parts(
             )
         )
 
-    if "isvideo" in weights:
+    # `isvideo` is only meaningful alongside a real metadata signal. Scoring it
+    # on its own would let a file that supplied no metadata match perfectly
+    # (False == False -> 1.0), so only include it when title/artist/length
+    # already produced a part.
+    if parts and "isvideo" in weights:
         file_is_video = file_metadata.is_video
         track_is_video = bool(track.get("video"))
         parts.append(
@@ -182,6 +186,10 @@ def score_file_track_on_release(
     """
     parts = score_track_only_parts(file_metadata, track, weights)
     parts.extend(compare_release_parts(file_metadata, release, weights, preferred_countries))
+    # With no comparable metadata the score is purely the fingerprint/search
+    # confidence — don't fabricate a 1.0 by averaging an empty parts list.
+    if not parts:
+        return get_search_score(track)
     return linear_combination_of_weights(parts) * get_search_score(track)
 
 
@@ -196,23 +204,33 @@ def compare_track(
 
     releases = track.get("releases") or []
     if not releases:
+        # No metadata to compare -> fall back to the fingerprint/search
+        # confidence rather than averaging an empty parts list to 1.0.
+        if not parts:
+            return get_search_score(track)
         return linear_combination_of_weights(parts) * get_search_score(track)
 
     best = 0.0
     for release in releases:
-        similarity = linear_combination_of_weights(
-            parts
-            + compare_release_parts(
-                file_metadata, release, weights, preferred_countries
-            )
+        release_parts = parts + compare_release_parts(
+            file_metadata, release, weights, preferred_countries
         )
-        best = max(best, similarity * get_search_score(track))
+        if not release_parts:
+            similarity = get_search_score(track)
+        else:
+            similarity = linear_combination_of_weights(release_parts) * get_search_score(
+                track
+            )
+        best = max(best, similarity)
     return best
 
 
 def release_to_metadata(
-    release: dict, preferred_countries: list[str] | None = None
+    release: dict,
+    preferred_countries: list[str] | None = None,
+    cover_art: dict[str, str] | None = None,
 ) -> AudioMetadata:
+    cover_art = cover_art or {}
     release_group = release.get("release-group") or {}
     primary_type = str(release_group.get("primary-type", "")).lower()
     secondary_types = [
@@ -237,26 +255,30 @@ def release_to_metadata(
         musicbrainz_release_group_id=release_group.get("id", ""),
         musicbrainz_release_artist_id=artist_credit_ids(release.get("artist-credit", [])),
         barcode=release.get("barcode") or "",
-        script=release.get("text-representation", {}).get("script") or "",
+        script=(release.get("text-representation") or {}).get("script") or "",
         originaldate=release_group.get("first-release-date", ""),
         label="; ".join(
-            info["label"]["name"]
+            str((info.get("label") or {}).get("name"))
             for info in label_infos
-            if info.get("label", {}).get("name")
+            if info and (info.get("label") or {}).get("name")
         ),
         catalognumber="; ".join(
             info["catalog-number"]
             for info in label_infos
-            if info.get("catalog-number")
+            if info and info.get("catalog-number")
         ),
+        cover_art_url=cover_art.get("cover_art_url", ""),
+        cover_art_thumb_url=cover_art.get("cover_art_thumb_url", ""),
     )
     return metadata
 
 
 def build_release_tracks(
-    release: dict, preferred_countries: list[str] | None = None
+    release: dict,
+    preferred_countries: list[str] | None = None,
+    cover_art: dict[str, str] | None = None,
 ) -> list[ReleaseTrack]:
-    release_metadata = release_to_metadata(release, preferred_countries)
+    release_metadata = release_to_metadata(release, preferred_countries, cover_art)
     release_credits = _extract_release_credits(release)
     release_artists = parse_artist_credits(release.get("artist-credit", []))
     tracks: list[ReleaseTrack] = []
@@ -301,6 +323,8 @@ def build_release_tracks(
                 label=release_metadata.label,
                 catalognumber=release_metadata.catalognumber,
                 genre=track_genre,
+                cover_art_url=release_metadata.cover_art_url,
+                cover_art_thumb_url=release_metadata.cover_art_thumb_url,
             )
             tracks.append(
                 ReleaseTrack(
@@ -345,6 +369,8 @@ RELEASE_TAG_KEYS: frozenset[str] = frozenset(
         "catalognumber",
         "barcode",
         "script",
+        "cover_art_url",
+        "cover_art_thumb_url",
     }
 )
 
@@ -384,6 +410,8 @@ def _extract_genres(*nodes: dict) -> str:
     counter: Counter[str] = Counter()
     for node in nodes:
         for entry in node.get("genres") or []:
+            if not entry:
+                continue
             name = entry.get("name")
             if not name:
                 continue

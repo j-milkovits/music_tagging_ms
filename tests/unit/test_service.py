@@ -76,6 +76,7 @@ def test_lookup_joint_routes_stage2_unmatched_to_rescue() -> None:
 
     mb_client = MagicMock()
     mb_client.get_release.return_value = release
+    mb_client.get_release_cover_art.return_value = None
 
     acoustid_client = MagicMock()
     acoustid_client.lookup_by_fingerprint.side_effect = fake_acoustid_lookup
@@ -164,6 +165,7 @@ def test_lookup_per_file_below_threshold_lands_in_unmatched_with_best_guess() ->
     )
     mb_client = MagicMock()
     mb_client.get_release.return_value = release
+    mb_client.get_release_cover_art.return_value = None
 
     service = StandaloneTaggingService(client=mb_client, acoustid_client=acoustid_client)
     # min_per_file_score=0.99 forces score-below-threshold path.
@@ -217,6 +219,7 @@ def test_lookup_per_file_groups_same_release_into_one_assignment() -> None:
 
     mb_client = MagicMock()
     mb_client.get_release.return_value = release
+    mb_client.get_release_cover_art.return_value = None
     acoustid_client = MagicMock()
     acoustid_client.lookup_by_fingerprint.side_effect = fake_acoustid_lookup
 
@@ -255,6 +258,7 @@ def test_lookup_per_file_mb_fallback_above_threshold_produces_match() -> None:
     mb_client = MagicMock()
     mb_client.find_tracks.return_value = [mb_search_recording]
     mb_client.get_release.return_value = release
+    mb_client.get_release_cover_art.return_value = None
 
     acoustid_client = MagicMock()
     acoustid_client.lookup_by_fingerprint.return_value = AcoustIdLookupResult(
@@ -310,6 +314,7 @@ def test_lookup_per_file_mb_fallback_below_threshold_yields_unmatched() -> None:
     mb_client = MagicMock()
     mb_client.find_tracks.return_value = [mb_search_recording]
     mb_client.get_release.return_value = release
+    mb_client.get_release_cover_art.return_value = None
 
     acoustid_client = MagicMock()
     acoustid_client.lookup_by_fingerprint.return_value = AcoustIdLookupResult(
@@ -435,6 +440,7 @@ def test_lookup_joint_rescues_acoustid_empty_via_mb_search() -> None:
     mb_client = MagicMock()
     mb_client.find_tracks.return_value = [mb_search_recording]
     mb_client.get_release.return_value = release
+    mb_client.get_release_cover_art.return_value = None
 
     acoustid_client = MagicMock()
     acoustid_client.lookup_by_fingerprint.return_value = AcoustIdLookupResult(
@@ -489,6 +495,7 @@ def test_lookup_per_file_match_produces_single_file_assignment() -> None:
     )
     mb_client = MagicMock()
     mb_client.get_release.return_value = release
+    mb_client.get_release_cover_art.return_value = None
 
     service = StandaloneTaggingService(client=mb_client, acoustid_client=acoustid_client)
     result = service.lookup(

@@ -24,6 +24,7 @@ from .joint_matcher import (
 from .matcher import (
     FILE_COMPARISON_WEIGHTS,
     build_release_tracks,
+    get_search_score,
     score_file_track_on_release,
     score_track_only_parts,
     split_release_track_tags,
@@ -160,24 +161,28 @@ class StandaloneTaggingService:
 
         stage1 = select_releases(normalised, preferred_countries, thresholds)
 
-        # Per-file AcoustID recording-id sets — invariant across releases, so
-        # compute once. Used by stage-2 to dominate any metadata heuristic
-        # when the file's fingerprint already pinpointed a specific recording.
-        file_recording_ids: dict[str, set[str]] = {
+        # Per-file AcoustID recording-id -> confidence maps — invariant across
+        # releases, so compute once. Used by stage-2 to dominate any metadata
+        # heuristic when the file's fingerprint already pinpointed a specific
+        # recording; the confidence (not a hardcoded 1.0) becomes the score.
+        file_recording_scores: dict[str, dict[str, float]] = {
             f.source_id: {
-                rec.get("id", "") for rec in f.recordings if rec.get("id")
+                rec["id"]: get_search_score(rec)
+                for rec in f.recordings
+                if rec.get("id")
             }
             for f in normalised
         }
-        score_fn = _make_stage2_score_fn(file_recording_ids)
+        score_fn = _make_stage2_score_fn(file_recording_scores)
 
         joint_releases: list[MaterialisedRelease] = []
         rescue_targets: set[str] = set(stage1.unmatched_file_ids)
 
         for selection in stage1.selections:
             release_full = self.client.get_release(selection.release_id)
+            cover_art = self.client.get_release_cover_art(selection.release_id)
             release_tracks = build_release_tracks(
-                release_full, list(preferred_countries)
+                release_full, list(preferred_countries), cover_art
             )
             release_assignment = assign_files_to_tracks(
                 normalised,
@@ -405,7 +410,10 @@ class StandaloneTaggingService:
 
         assert best_release is not None
         release_full = self.client.get_release(best_release["id"])
-        release_tracks = build_release_tracks(release_full, list(preferred_countries))
+        cover_art = self.client.get_release_cover_art(best_release["id"])
+        release_tracks = build_release_tracks(
+            release_full, list(preferred_countries), cover_art
+        )
         matched_track = next(
             (
                 rt
@@ -450,19 +458,21 @@ class StandaloneTaggingService:
 
 
 def _make_stage2_score_fn(
-    file_recording_ids: dict[str, set[str]],
+    file_recording_scores: dict[str, dict[str, float]],
 ) -> ScoreFn:
     """Build a score function for stage-2 bipartite matching.
 
     Strong rule: a file whose AcoustID candidate set includes the track's
-    recording id wins that track outright (score 1.0). Otherwise fall back to
-    the existing metadata similarity over title/artist/length. Files that
-    supplied no metadata return 0 so they don't accidentally outscore a real
+    recording id wins that track outright, scored at that recording's AcoustID
+    fingerprint confidence (not a hardcoded 1.0). Otherwise fall back to the
+    existing metadata similarity over title/artist/length. Files that supplied
+    no metadata return 0 so they don't accidentally outscore a real
     recording-id match elsewhere.
     """
     def score_fn(file: FileCandidates, track: ReleaseTrack) -> float:
-        if track.recording_id in file_recording_ids.get(file.source_id, set()):
-            return 1.0
+        recording_scores = file_recording_scores.get(file.source_id, {})
+        if track.recording_id in recording_scores:
+            return recording_scores[track.recording_id]
         file_md = file.metadata or AudioMetadata()
         if not (file_md.title or file_md.artist or file_md.length_ms):
             return 0.0

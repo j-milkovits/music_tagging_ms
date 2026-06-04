@@ -33,6 +33,8 @@ class AudioMetadata:
     script: str = ""
     originaldate: str = ""
     genre: str = ""
+    cover_art_url: str = ""
+    cover_art_thumb_url: str = ""
 
 
 @dataclass(frozen=True, slots=True)
