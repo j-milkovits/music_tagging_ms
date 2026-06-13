@@ -256,6 +256,7 @@ class ReleaseMetadataPayload(BaseModel):
     conductors: list[ArtistCreditPayload] = Field(default_factory=list)
     arrangers: list[ArtistCreditPayload] = Field(default_factory=list)
     performers: list[PerformerPayload] = Field(default_factory=list)
+    instruments: list[PerformerPayload] = Field(default_factory=list)
 
     model_config = {"extra": "ignore"}
 
@@ -287,6 +288,7 @@ class TrackMetadataPayload(BaseModel):
     mixers: list[ArtistCreditPayload] = Field(default_factory=list)
     conductors: list[ArtistCreditPayload] = Field(default_factory=list)
     performers: list[PerformerPayload] = Field(default_factory=list)
+    instruments: list[PerformerPayload] = Field(default_factory=list)
     works: list[WorkPayload] = Field(default_factory=list)
 
     model_config = {"extra": "ignore"}
@@ -648,6 +650,7 @@ def _serialize_track_credits(c: TrackCredits) -> dict[str, list]:
         "mixers": [_serialize_artist_credit(a) for a in c.mixers],
         "conductors": [_serialize_artist_credit(a) for a in c.conductors],
         "performers": [_serialize_performer(p) for p in c.performers],
+        "instruments": [_serialize_performer(p) for p in c.instruments],
         "works": [_serialize_work(w) for w in c.works],
     }
 
@@ -660,6 +663,7 @@ def _serialize_release_credits(c: ReleaseCredits) -> dict[str, list]:
         "conductors": [_serialize_artist_credit(a) for a in c.conductors],
         "arrangers": [_serialize_artist_credit(a) for a in c.arrangers],
         "performers": [_serialize_performer(p) for p in c.performers],
+        "instruments": [_serialize_performer(p) for p in c.instruments],
     }
 
 

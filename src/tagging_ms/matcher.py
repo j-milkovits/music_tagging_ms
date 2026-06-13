@@ -458,7 +458,7 @@ def _performer_from_rel(rel: dict) -> Performer | None:
 
 
 _PERFORMER_REL_TYPES: frozenset[str] = frozenset(
-    {"instrument", "vocal", "performer", "performing orchestra"}
+    {"vocal", "performer", "performing orchestra"}
 )
 
 
@@ -466,8 +466,18 @@ def _bucket_artist_rel(
     rel: dict,
     buckets: dict[str, list[ArtistCredit]],
     performers: list[Performer],
+    instruments: list[Performer] | None = None,
 ) -> None:
     rel_type = rel.get("type", "")
+    if rel_type == "instrument":
+        # Instrument relations are exposed as a dedicated, person-independent
+        # `instruments` list (the relation's `attributes` hold the instrument
+        # names) rather than mixed into `performers`.
+        if instruments is not None:
+            performer = _performer_from_rel(rel)
+            if performer is not None:
+                instruments.append(performer)
+        return
     if rel_type in _PERFORMER_REL_TYPES:
         performer = _performer_from_rel(rel)
         if performer is not None:
@@ -507,12 +517,13 @@ def _extract_track_credits(recording: dict) -> TrackCredits:
         "writers": [],
     }
     performers: list[Performer] = []
+    instruments: list[Performer] = []
     works: list[Work] = []
 
     for rel in recording.get("relations") or []:
         target_type = rel.get("target-type", "")
         if target_type == "artist":
-            _bucket_artist_rel(rel, buckets, performers)
+            _bucket_artist_rel(rel, buckets, performers, instruments)
         elif target_type == "work" and rel.get("type") == "performance":
             work = rel.get("work") or {}
             title = str(work.get("title") or "")
@@ -539,6 +550,7 @@ def _extract_track_credits(recording: dict) -> TrackCredits:
         mixers=tuple(buckets["mixers"]),
         conductors=tuple(buckets["conductors"]),
         performers=tuple(performers),
+        instruments=tuple(instruments),
         works=tuple(works),
     )
 
@@ -553,10 +565,11 @@ def _extract_release_credits(release: dict) -> ReleaseCredits:
         "arrangers": [],
     }
     performers: list[Performer] = []
+    instruments: list[Performer] = []
     for rel in release.get("relations") or []:
         if rel.get("target-type") != "artist":
             continue
-        _bucket_artist_rel(rel, buckets, performers)
+        _bucket_artist_rel(rel, buckets, performers, instruments)
     return ReleaseCredits(
         producers=tuple(buckets["producers"]),
         engineers=tuple(buckets["engineers"]),
@@ -564,6 +577,7 @@ def _extract_release_credits(release: dict) -> ReleaseCredits:
         conductors=tuple(buckets["conductors"]),
         arrangers=tuple(buckets["arrangers"]),
         performers=tuple(performers),
+        instruments=tuple(instruments),
     )
 
 

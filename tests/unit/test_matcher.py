@@ -153,6 +153,33 @@ def test_build_release_tracks_populates_conductor_and_performers(
     assert performers_seen
 
 
+def test_build_release_tracks_exposes_instruments_separate_from_performers(
+    carmen_release: dict,
+) -> None:
+    """Instrument relations land in `instruments` (not `performers`)."""
+    tracks = build_release_tracks(carmen_release, ["DE"])
+    assert tracks
+
+    all_instruments = [
+        p
+        for t in tracks
+        for p in (*t.track_credits.instruments, *t.release_credits.instruments)
+    ]
+    # Anne-Sophie Mutter plays violin on this release.
+    assert any(
+        p.name == "Anne‐Sophie Mutter" and "violin" in p.attributes
+        for p in all_instruments
+    )
+
+    # Instrument players must NOT be duplicated into `performers`.
+    performer_names = {
+        p.name
+        for t in tracks
+        for p in (*t.track_credits.performers, *t.release_credits.performers)
+    }
+    assert "Anne‐Sophie Mutter" not in performer_names
+
+
 def test_build_release_tracks_populates_label_isrc_barcode(carmen_release: dict) -> None:
     tracks = build_release_tracks(carmen_release, ["DE"])
     assert tracks

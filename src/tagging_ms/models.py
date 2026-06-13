@@ -73,6 +73,7 @@ class TrackCredits:
     mixers: tuple[ArtistCredit, ...] = ()
     conductors: tuple[ArtistCredit, ...] = ()
     performers: tuple[Performer, ...] = ()
+    instruments: tuple[Performer, ...] = ()
     works: tuple[Work, ...] = ()
 
 
@@ -84,6 +85,7 @@ class ReleaseCredits:
     conductors: tuple[ArtistCredit, ...] = ()
     arrangers: tuple[ArtistCredit, ...] = ()
     performers: tuple[Performer, ...] = ()
+    instruments: tuple[Performer, ...] = ()
 
 
 @dataclass(slots=True)
