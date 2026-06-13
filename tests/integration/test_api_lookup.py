@@ -284,8 +284,59 @@ def test_disc_lookup_returns_release_and_candidates(client: TestClient) -> None:
     assert cover_art["front"] is True
     assert len(rel["tracks"]) == 12
     track = rel["tracks"][0]
-    assert track.get("title")
-    assert track["artists"][0]["name"] == "Nirvana"
+    # Per-track shape mirrors fingerprint lookup: fields nested under `metadata`,
+    # with track_id/recording_id alongside.
+    assert track.get("track_id")
+    assert track.get("recording_id")
+    assert track["metadata"].get("title")
+    assert track["metadata"]["artists"][0]["name"] == "Nirvana"
     # No file-match fields leak into the disc response.
     assert "score" not in track
     assert "source_id" not in track
+
+
+# Real CD: Elton John — "Duets" (16 tracks). Looked up by MusicBrainz DiscID.
+_DUETS_DISCID = "78MUjxQ_365SFuDcykZxpqGoG2A-"
+
+
+@pytest.mark.vcr(
+    cassette_library_dir=str(CASSETTE_DIR),
+)
+def test_disc_lookup_real_discid_elton_john_duets(client: TestClient) -> None:
+    res = client.post(
+        "/api/disc",
+        json={
+            "discid": _DUETS_DISCID,
+            "preferred_release_countries": ["DE", "XE", "XW"],
+        },
+        headers={"Authorization": "Bearer test-bearer-token"},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+
+    # All matching pressings surface as lightweight candidates.
+    assert body["candidates"]
+    assert all(c["title"] == "Duets" for c in body["candidates"])
+    assert all(c["artist"] == "Elton John" for c in body["candidates"])
+
+    rel = body["release"]
+    assert rel is not None
+    assert body["reason"] is None
+    assert rel["metadata"]["title"] == "Duets"
+    assert rel["metadata"]["artists"][0]["name"] == "Elton John"
+    assert len(rel["tracks"]) == 16
+
+    # Per-track shape mirrors fingerprint lookup: track_id/recording_id siblings,
+    # everything else nested under `metadata`.
+    track1 = rel["tracks"][0]
+    assert track1.get("track_id")
+    assert track1.get("recording_id")
+    md = track1["metadata"]
+    assert md["title"] == "Teardrops"
+    assert {a["name"] for a in md["artists"]} == {"Elton John", "k.d. lang"}
+    # Track 1 carries both performers and (separate) instruments.
+    assert {p["name"] for p in md["performers"]} >= {"Elton John", "k.d. lang"}
+    instrument_names = {
+        attr for p in md["instruments"] for attr in p["attributes"]
+    }
+    assert {"keyboard", "guitar", "bass"} <= instrument_names

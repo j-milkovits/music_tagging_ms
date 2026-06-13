@@ -404,10 +404,16 @@ class DiscCandidatePayload(BaseModel):
     track_count: int
 
 
+class DiscTrackPayload(BaseModel):
+    track_id: str
+    recording_id: str
+    metadata: TrackMetadataPayload
+
+
 class DiscReleasePayload(BaseModel):
     release_id: str
     metadata: ReleaseMetadataPayload
-    tracks: list[TrackMetadataPayload]
+    tracks: list[DiscTrackPayload]
 
 
 class DiscLookupResponse(BaseModel):
@@ -605,9 +611,15 @@ def _serialize_disc_result(result: DiscLookupResult) -> dict:
             },
             "tracks": [
                 {
-                    **_serialize_applied_tags(t.applied_track_tags),
-                    "artists": [_serialize_artist_credit(ac) for ac in t.artists],
-                    **_serialize_track_credits(t.credits),
+                    "track_id": t.track_id,
+                    "recording_id": t.recording_id,
+                    "metadata": {
+                        **_serialize_applied_tags(t.applied_track_tags),
+                        "artists": [
+                            _serialize_artist_credit(ac) for ac in t.artists
+                        ],
+                        **_serialize_track_credits(t.credits),
+                    },
                 }
                 for t in rel.tracks
             ],
