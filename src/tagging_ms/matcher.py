@@ -7,6 +7,7 @@ from dataclasses import asdict
 from .models import (
     ArtistCredit,
     AudioMetadata,
+    CoverArt,
     MatchCandidate,
     Performer,
     ReleaseCredits,
@@ -228,9 +229,7 @@ def compare_track(
 def release_to_metadata(
     release: dict,
     preferred_countries: list[str] | None = None,
-    cover_art: dict[str, str] | None = None,
 ) -> AudioMetadata:
-    cover_art = cover_art or {}
     release_group = release.get("release-group") or {}
     primary_type = str(release_group.get("primary-type", "")).lower()
     secondary_types = [
@@ -267,19 +266,35 @@ def release_to_metadata(
             for info in label_infos
             if info and info.get("catalog-number")
         ),
-        cover_art_url=cover_art.get("cover_art_url", ""),
-        cover_art_thumb_url=cover_art.get("cover_art_thumb_url", ""),
     )
     return metadata
+
+
+def _extract_cover_art(release: dict) -> CoverArt | None:
+    """Pass through the release's `cover-art-archive` availability block.
+
+    MusicBrainz includes this object by default on release responses, so we
+    expose it directly instead of making a separate Cover Art Archive request.
+    """
+    caa = release.get("cover-art-archive")
+    if not isinstance(caa, dict):
+        return None
+    return CoverArt(
+        front=bool(caa.get("front")),
+        back=bool(caa.get("back")),
+        count=int(caa.get("count") or 0),
+        artwork=bool(caa.get("artwork")),
+        darkened=bool(caa.get("darkened")),
+    )
 
 
 def build_release_tracks(
     release: dict,
     preferred_countries: list[str] | None = None,
-    cover_art: dict[str, str] | None = None,
 ) -> list[ReleaseTrack]:
-    release_metadata = release_to_metadata(release, preferred_countries, cover_art)
+    release_metadata = release_to_metadata(release, preferred_countries)
     release_credits = _extract_release_credits(release)
+    cover_art = _extract_cover_art(release)
     release_artists = parse_artist_credits(release.get("artist-credit", []))
     tracks: list[ReleaseTrack] = []
     media = release.get("media", [])
@@ -323,8 +338,6 @@ def build_release_tracks(
                 label=release_metadata.label,
                 catalognumber=release_metadata.catalognumber,
                 genre=track_genre,
-                cover_art_url=release_metadata.cover_art_url,
-                cover_art_thumb_url=release_metadata.cover_art_thumb_url,
             )
             tracks.append(
                 ReleaseTrack(
@@ -337,6 +350,7 @@ def build_release_tracks(
                     artists=parse_artist_credits(track_artist_credit),
                     track_credits=track_credits,
                     release_credits=release_credits,
+                    cover_art=cover_art,
                 )
             )
     return tracks
@@ -369,8 +383,6 @@ RELEASE_TAG_KEYS: frozenset[str] = frozenset(
         "catalognumber",
         "barcode",
         "script",
-        "cover_art_url",
-        "cover_art_thumb_url",
     }
 )
 

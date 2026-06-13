@@ -15,8 +15,6 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_USER_AGENT = "tagging-ms/0.1"
 
-COVER_ART_ARCHIVE_BASE_URL = "https://coverartarchive.org"
-
 
 class MusicBrainzClient:
     def __init__(
@@ -98,51 +96,6 @@ class MusicBrainzClient:
                 ),
             },
         )
-
-    def get_release_cover_art(self, release_id: str) -> dict[str, str] | None:
-        """Fetch and validate front cover art for a release from the CAA.
-
-        Queries the Cover Art Archive JSON listing and returns the front
-        image's full and 250px-thumbnail URLs, or ``None`` when the release
-        has no cover art (CAA responds 404) or the request otherwise fails.
-        The CAA is a distinct host, so ``ratecontrol`` rate-limits it
-        independently of the main MusicBrainz endpoint.
-        """
-        url = f"{COVER_ART_ARCHIVE_BASE_URL}/release/{release_id}"
-
-        def factory() -> urllib.request.Request:
-            return urllib.request.Request(
-                url,
-                headers={
-                    "Accept": "application/json",
-                    "User-Agent": self.user_agent,
-                },
-            )
-
-        try:
-            payload = ratecontrol.send_json(factory, url)
-        except urllib.error.HTTPError as exc:
-            # 404 simply means "no cover art for this release" — common and
-            # not an error worth surfacing.
-            if exc.code != 404:
-                logger.warning("[coverart] request failed: %s (%s)", url, exc.code)
-            return None
-        except urllib.error.URLError:
-            logger.warning("[coverart] request failed: %s", url)
-            return None
-
-        front = _select_front_image(payload.get("images") or [])
-        if not front:
-            return None
-        thumbnails = front.get("thumbnails") or {}
-        thumb = thumbnails.get("250") or thumbnails.get("small") or ""
-        image = front.get("image") or ""
-        if not image and not thumb:
-            return None
-        return {
-            "cover_art_url": str(image),
-            "cover_art_thumb_url": str(thumb),
-        }
 
     def get_release_by_discid(self, discid: str, toc: str) -> dict:
         """Look up releases by CD DiscID and/or TOC (table of contents).
@@ -244,23 +197,6 @@ def _build_lucene_query(args: dict[str, str]) -> str:
 
 def _clean_artist_name(value: str) -> str:
     return _TOPIC_SUFFIX_RE.sub("", value).strip()
-
-
-def _select_front_image(images: Iterable[dict]) -> dict | None:
-    """Pick the front cover from a CAA image list.
-
-    Prefers the entry explicitly flagged ``front``; otherwise falls back to the
-    first image so a release with art but no front flag still yields something.
-    """
-    first: dict | None = None
-    for image in images:
-        if not image:
-            continue
-        if first is None:
-            first = image
-        if image.get("front"):
-            return image
-    return first
 
 
 def artist_credit_name(node: Iterable[dict]) -> str:

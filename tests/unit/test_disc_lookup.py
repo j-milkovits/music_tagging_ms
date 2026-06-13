@@ -100,7 +100,6 @@ def _service_with(releases: list[dict], full: dict | None = None) -> StandaloneT
     client = MagicMock()
     client.get_release_by_discid.return_value = {"releases": releases}
     client.get_release.return_value = full or (releases[0] if releases else {})
-    client.get_release_cover_art.return_value = None
     return StandaloneTaggingService(client=client, acoustid_client=MagicMock())
 
 

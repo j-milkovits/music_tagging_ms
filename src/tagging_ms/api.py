@@ -17,6 +17,7 @@ from .joint_matcher import Thresholds
 from .models import (
     ArtistCredit,
     AudioMetadata,
+    CoverArt,
     Performer,
     ReleaseCredits,
     TrackCredits,
@@ -228,6 +229,14 @@ class WorkPayload(BaseModel):
     musicbrainz_id: str = ""
 
 
+class CoverArtPayload(BaseModel):
+    front: bool = False
+    back: bool = False
+    count: int = 0
+    artwork: bool = False
+    darkened: bool = False
+
+
 class ReleaseMetadataPayload(BaseModel):
     # The release artist (`release_artist` / `musicbrainz_release_artist_id`) is
     # intentionally absent — clients should reconstruct it from the structured
@@ -244,8 +253,13 @@ class ReleaseMetadataPayload(BaseModel):
     catalognumber: str | None = None
     barcode: str | None = None
     script: str | None = None
-    cover_art_url: str | None = None
-    cover_art_thumb_url: str | None = None
+    cover_art: CoverArtPayload | None = Field(
+        default=None,
+        description=(
+            "MusicBrainz `cover-art-archive` availability block. Fetch the image "
+            "on demand from coverartarchive.org/release/{musicbrainz_id}/front."
+        ),
+    )
     artists: list[ArtistCreditPayload] = Field(
         default_factory=list,
         description="Structured release artist credits.",
@@ -528,6 +542,7 @@ def _serialize_lookup_result(result: LookupResult) -> dict:
                 "score": rel.score,
                 "metadata": {
                     **_serialize_release_tags(rel.applied_release_tags),
+                    "cover_art": _serialize_cover_art(rel.cover_art),
                     "artists": [
                         _serialize_artist_credit(ac) for ac in rel.release_artists
                     ],
@@ -582,6 +597,7 @@ def _serialize_disc_result(result: DiscLookupResult) -> dict:
             "release_id": rel.release_id,
             "metadata": {
                 **_serialize_release_tags(rel.applied_release_tags),
+                "cover_art": _serialize_cover_art(rel.cover_art),
                 "artists": [
                     _serialize_artist_credit(ac) for ac in rel.release_artists
                 ],
@@ -664,6 +680,18 @@ def _serialize_release_credits(c: ReleaseCredits) -> dict[str, list]:
         "arrangers": [_serialize_artist_credit(a) for a in c.arrangers],
         "performers": [_serialize_performer(p) for p in c.performers],
         "instruments": [_serialize_performer(p) for p in c.instruments],
+    }
+
+
+def _serialize_cover_art(c: CoverArt | None) -> dict[str, object] | None:
+    if c is None:
+        return None
+    return {
+        "front": c.front,
+        "back": c.back,
+        "count": c.count,
+        "artwork": c.artwork,
+        "darkened": c.darkened,
     }
 
 

@@ -34,6 +34,7 @@ from .matcher import (
 from .models import (
     ArtistCredit,
     AudioMetadata,
+    CoverArt,
     ReleaseCredits,
     ReleaseTrack,
     TrackCredits,
@@ -69,6 +70,7 @@ class MaterialisedRelease:
     applied_release_tags: dict[str, str]
     release_artists: tuple[ArtistCredit, ...]
     release_credits: ReleaseCredits
+    cover_art: CoverArt | None
     tracks: tuple[MaterialisedTrack, ...]
 
 
@@ -126,6 +128,7 @@ class DiscRelease:
     applied_release_tags: dict[str, str]
     release_artists: tuple[ArtistCredit, ...]
     release_credits: ReleaseCredits
+    cover_art: CoverArt | None
     tracks: tuple[DiscTrack, ...]
 
 
@@ -210,8 +213,7 @@ class StandaloneTaggingService:
         best = self._rank_disc_releases(releases, countries, metadata)
 
         release_full = self.client.get_release(best["id"])
-        cover_art = self.client.get_release_cover_art(best["id"])
-        release_tracks = build_release_tracks(release_full, countries, cover_art)
+        release_tracks = build_release_tracks(release_full, countries)
         disc_release = self._materialise_disc_release(best["id"], release_tracks)
         return DiscLookupResult(
             release=disc_release, candidates=candidates, reason=None
@@ -277,12 +279,14 @@ class StandaloneTaggingService:
         release_tags: dict[str, str] = {}
         release_artists: tuple[ArtistCredit, ...] = ()
         release_credits: ReleaseCredits = ReleaseCredits()
+        cover_art: CoverArt | None = None
         for rt in release_tracks:
             release_part, track_part = split_release_track_tags(rt)
             if not release_tags:
                 release_tags = release_part
                 release_artists = rt.release_artists
                 release_credits = rt.release_credits
+                cover_art = rt.cover_art
             tracks.append(
                 DiscTrack(
                     track_id=rt.track_id,
@@ -297,6 +301,7 @@ class StandaloneTaggingService:
             applied_release_tags=release_tags,
             release_artists=release_artists,
             release_credits=release_credits,
+            cover_art=cover_art,
             tracks=tuple(tracks),
         )
 
@@ -342,9 +347,8 @@ class StandaloneTaggingService:
 
         for selection in stage1.selections:
             release_full = self.client.get_release(selection.release_id)
-            cover_art = self.client.get_release_cover_art(selection.release_id)
             release_tracks = build_release_tracks(
-                release_full, list(preferred_countries), cover_art
+                release_full, list(preferred_countries)
             )
             release_assignment = assign_files_to_tracks(
                 normalised,
@@ -437,6 +441,7 @@ class StandaloneTaggingService:
                     applied_release_tags=group[0].applied_release_tags,
                     release_artists=group[0].release_artists,
                     release_credits=group[0].release_credits,
+                    cover_art=group[0].cover_art,
                     tracks=merged_tracks,
                 )
             )
@@ -572,9 +577,8 @@ class StandaloneTaggingService:
 
         assert best_release is not None
         release_full = self.client.get_release(best_release["id"])
-        cover_art = self.client.get_release_cover_art(best_release["id"])
         release_tracks = build_release_tracks(
-            release_full, list(preferred_countries), cover_art
+            release_full, list(preferred_countries)
         )
         matched_track = next(
             (
@@ -604,6 +608,7 @@ class StandaloneTaggingService:
             applied_release_tags=release_tags,
             release_artists=matched_track.release_artists,
             release_credits=matched_track.release_credits,
+            cover_art=matched_track.cover_art,
             tracks=(
                 MaterialisedTrack(
                     source_id=source_id,
@@ -660,6 +665,7 @@ def _materialise_release(
     release_tags: dict[str, str] = {}
     release_artists: tuple[ArtistCredit, ...] = ()
     release_credits: ReleaseCredits = ReleaseCredits()
+    cover_art: CoverArt | None = None
     for fa in release_assignment.assignments:
         track = track_by_id.get(fa.track_id)
         if track is None:
@@ -669,6 +675,7 @@ def _materialise_release(
             release_tags = release_part
             release_artists = track.release_artists
             release_credits = track.release_credits
+            cover_art = track.cover_art
         matched_tracks.append(
             MaterialisedTrack(
                 source_id=fa.source_id,
@@ -693,6 +700,7 @@ def _materialise_release(
         applied_release_tags=release_tags,
         release_artists=release_artists,
         release_credits=release_credits,
+        cover_art=cover_art,
         tracks=tuple(matched_tracks),
     )
 

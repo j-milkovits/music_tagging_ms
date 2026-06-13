@@ -33,8 +33,6 @@ class AudioMetadata:
     script: str = ""
     originaldate: str = ""
     genre: str = ""
-    cover_art_url: str = ""
-    cover_art_thumb_url: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +52,23 @@ class Performer:
     type: str = ""
     disambiguation: str = ""
     attributes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class CoverArt:
+    """The Cover Art Archive availability block from the MusicBrainz release.
+
+    Mirrors the release's `cover-art-archive` object: whether front/back art
+    exists, how many images there are, and whether the artwork is darkened.
+    Clients can fetch the actual image on demand from coverartarchive.org —
+    we no longer make that request ourselves.
+    """
+
+    front: bool = False
+    back: bool = False
+    count: int = 0
+    artwork: bool = False
+    darkened: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +114,7 @@ class ReleaseTrack:
     artists: tuple[ArtistCredit, ...] = ()
     track_credits: TrackCredits = field(default_factory=TrackCredits)
     release_credits: ReleaseCredits = field(default_factory=ReleaseCredits)
+    cover_art: CoverArt | None = None
 
 
 @dataclass(slots=True)

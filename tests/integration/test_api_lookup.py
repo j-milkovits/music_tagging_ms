@@ -111,11 +111,13 @@ def test_lookup_joint_carmen(client: TestClient, carmen_items: list[dict]) -> No
     assert release_md.get("label")
     assert release_md.get("barcode")
     assert release_md.get("musicbrainz_id")
-    # Release-level cover art validated against the Cover Art Archive.
-    assert release_md.get("cover_art_url", "").startswith(
-        "http://coverartarchive.org/release/"
-    )
-    assert release_md.get("cover_art_thumb_url", "").endswith("-250.jpg")
+    # Release-level cover-art availability block, forwarded from MusicBrainz
+    # (no separate Cover Art Archive request).
+    cover_art = release_md.get("cover_art")
+    assert cover_art is not None
+    assert cover_art["front"] is True
+    assert cover_art["count"] >= 1
+    assert {"front", "back", "count", "artwork", "darkened"} <= cover_art.keys()
 
     sample_track = rel["tracks"][0]
     track_md = sample_track["metadata"]
@@ -130,7 +132,7 @@ def test_lookup_joint_carmen(client: TestClient, carmen_items: list[dict]) -> No
     assert any(w.get("musicbrainz_id") for w in track_md["works"])
     assert track_md.get("genre")
     # Cover art is release-level only — not duplicated onto every track.
-    assert "cover_art_url" not in track_md
+    assert "cover_art" not in track_md
     # acoustid_id is top-level on each matched track, not in metadata.
     assert sample_track["acoustid_id"]
     # Score reflects real AcoustID fingerprint confidence, not a hardcoded 1.0.
@@ -277,9 +279,9 @@ def test_disc_lookup_returns_release_and_candidates(client: TestClient) -> None:
     assert rel["release_id"]
     assert rel["metadata"]["title"] == "Nevermind"
     assert rel["metadata"]["artists"][0]["name"] == "Nirvana"
-    assert rel["metadata"].get("cover_art_url", "").startswith(
-        "http://coverartarchive.org/release/"
-    )
+    cover_art = rel["metadata"].get("cover_art")
+    assert cover_art is not None
+    assert cover_art["front"] is True
     assert len(rel["tracks"]) == 12
     track = rel["tracks"][0]
     assert track.get("title")

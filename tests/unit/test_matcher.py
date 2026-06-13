@@ -113,18 +113,6 @@ def test_release_to_metadata_survives_null_nested_values() -> None:
     assert md.script == ""
 
 
-def test_release_to_metadata_sets_cover_art_fields() -> None:
-    md = release_to_metadata(
-        {"id": "rid", "title": "X"},
-        cover_art={
-            "cover_art_url": "http://coverartarchive.org/release/rid/1.jpg",
-            "cover_art_thumb_url": "http://coverartarchive.org/release/rid/1-250.jpg",
-        },
-    )
-    assert md.cover_art_url.endswith("/1.jpg")
-    assert md.cover_art_thumb_url.endswith("-250.jpg")
-
-
 def test_build_release_tracks_extracts_composer_for_karajan(karajan_release: dict) -> None:
     """The work-rels fix should expose composer on Karajan's Beethoven 9 tracks."""
     tracks = build_release_tracks(karajan_release, ["DE", "XE"])
