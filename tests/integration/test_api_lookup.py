@@ -113,7 +113,7 @@ def test_lookup_joint_carmen(client: TestClient, carmen_items: list[dict]) -> No
     assert release_md.get("musicbrainz_id")
     # Release-level cover-art availability block, forwarded from MusicBrainz
     # (no separate Cover Art Archive request).
-    cover_art = release_md.get("cover_art")
+    cover_art = release_md.get("cover-art-archive")
     assert cover_art is not None
     assert cover_art["front"] is True
     assert cover_art["count"] >= 1
@@ -132,7 +132,7 @@ def test_lookup_joint_carmen(client: TestClient, carmen_items: list[dict]) -> No
     assert any(w.get("musicbrainz_id") for w in track_md["works"])
     assert track_md.get("genre")
     # Cover art is release-level only — not duplicated onto every track.
-    assert "cover_art" not in track_md
+    assert "cover-art-archive" not in track_md
     # acoustid_id is top-level on each matched track, not in metadata.
     assert sample_track["acoustid_id"]
     # Score reflects real AcoustID fingerprint confidence, not a hardcoded 1.0.
@@ -279,7 +279,7 @@ def test_disc_lookup_returns_release_and_candidates(client: TestClient) -> None:
     assert rel["release_id"]
     assert rel["metadata"]["title"] == "Nevermind"
     assert rel["metadata"]["artists"][0]["name"] == "Nirvana"
-    cover_art = rel["metadata"].get("cover_art")
+    cover_art = rel["metadata"].get("cover-art-archive")
     assert cover_art is not None
     assert cover_art["front"] is True
     assert len(rel["tracks"]) == 12

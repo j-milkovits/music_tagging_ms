@@ -255,6 +255,9 @@ class ReleaseMetadataPayload(BaseModel):
     script: str | None = None
     cover_art: CoverArtPayload | None = Field(
         default=None,
+        # Serialize under MusicBrainz's own key so the block matches the raw
+        # release JSON. FastAPI emits responses with by_alias=True by default.
+        alias="cover-art-archive",
         description=(
             "MusicBrainz `cover-art-archive` availability block. Fetch the image "
             "on demand from coverartarchive.org/release/{musicbrainz_id}/front."
@@ -272,7 +275,7 @@ class ReleaseMetadataPayload(BaseModel):
     performers: list[PerformerPayload] = Field(default_factory=list)
     instruments: list[PerformerPayload] = Field(default_factory=list)
 
-    model_config = {"extra": "ignore"}
+    model_config = {"extra": "ignore", "populate_by_name": True}
 
 
 class TrackMetadataPayload(BaseModel):
@@ -548,7 +551,7 @@ def _serialize_lookup_result(result: LookupResult) -> dict:
                 "score": rel.score,
                 "metadata": {
                     **_serialize_release_tags(rel.applied_release_tags),
-                    "cover_art": _serialize_cover_art(rel.cover_art),
+                    "cover-art-archive": _serialize_cover_art(rel.cover_art),
                     "artists": [
                         _serialize_artist_credit(ac) for ac in rel.release_artists
                     ],
