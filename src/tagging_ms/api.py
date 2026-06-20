@@ -253,6 +253,7 @@ class ReleaseMetadataPayload(BaseModel):
     catalognumber: str | None = None
     barcode: str | None = None
     script: str | None = None
+    language: str | None = None
     cover_art: CoverArtPayload | None = Field(
         default=None,
         # Serialize under MusicBrainz's own key so the block matches the raw

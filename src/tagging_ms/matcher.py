@@ -255,6 +255,7 @@ def release_to_metadata(
         musicbrainz_release_artist_id=artist_credit_ids(release.get("artist-credit", [])),
         barcode=release.get("barcode") or "",
         script=(release.get("text-representation") or {}).get("script") or "",
+        language=(release.get("text-representation") or {}).get("language") or "",
         originaldate=release_group.get("first-release-date", ""),
         label="; ".join(
             str((info.get("label") or {}).get("name"))
@@ -334,6 +335,7 @@ def build_release_tracks(
                 musicbrainz_release_artist_id=release_metadata.musicbrainz_release_artist_id,
                 barcode=release_metadata.barcode,
                 script=release_metadata.script,
+                language=release_metadata.language,
                 originaldate=release_metadata.originaldate,
                 label=release_metadata.label,
                 catalognumber=release_metadata.catalognumber,
@@ -383,6 +385,7 @@ RELEASE_TAG_KEYS: frozenset[str] = frozenset(
         "catalognumber",
         "barcode",
         "script",
+        "language",
     }
 )
 

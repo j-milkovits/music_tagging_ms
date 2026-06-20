@@ -111,6 +111,7 @@ def test_release_to_metadata_survives_null_nested_values() -> None:
     assert md.label == "Real Label"
     assert md.catalognumber == "CAT-1"
     assert md.script == ""
+    assert md.language == ""
 
 
 def test_build_release_tracks_extracts_composer_for_karajan(karajan_release: dict) -> None:

@@ -31,6 +31,7 @@ class AudioMetadata:
     catalognumber: str = ""
     barcode: str = ""
     script: str = ""
+    language: str = ""
     originaldate: str = ""
     genre: str = ""
 

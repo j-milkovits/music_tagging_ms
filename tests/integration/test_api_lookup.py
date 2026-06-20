@@ -110,6 +110,8 @@ def test_lookup_joint_carmen(client: TestClient, carmen_items: list[dict]) -> No
     assert "musicbrainz_release_artist_id" not in release_md
     assert release_md.get("label")
     assert release_md.get("barcode")
+    # Release text language from MusicBrainz `text-representation.language`.
+    assert release_md.get("language")
     assert release_md.get("musicbrainz_id")
     # Release-level cover-art availability block, forwarded from MusicBrainz
     # (no separate Cover Art Archive request).
@@ -133,6 +135,8 @@ def test_lookup_joint_carmen(client: TestClient, carmen_items: list[dict]) -> No
     assert track_md.get("genre")
     # Cover art is release-level only — not duplicated onto every track.
     assert "cover-art-archive" not in track_md
+    # Language is release-level only — not duplicated onto every track.
+    assert "language" not in track_md
     # acoustid_id is top-level on each matched track, not in metadata.
     assert sample_track["acoustid_id"]
     # Score reflects real AcoustID fingerprint confidence, not a hardcoded 1.0.
