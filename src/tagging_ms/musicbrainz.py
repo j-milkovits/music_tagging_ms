@@ -145,7 +145,7 @@ class MusicBrainzClient:
 
         try:
             return ratecontrol.send_json(factory, url)
-        except urllib.error.HTTPError:
+        except urllib.error.URLError:
             logger.warning("[musicbrainz] request failed: %s", url)
             raise
 

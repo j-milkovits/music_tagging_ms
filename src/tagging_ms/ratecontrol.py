@@ -213,11 +213,12 @@ def send_json(
 
     ``request_factory`` is called for each attempt so it can build a fresh
     ``urllib.request.Request`` (urlopen consumes the request stream). The loop
-    retries up to ``TEMP_ERRORS_RETRIES`` times on 503/429, mirroring Picard's
-    ``_handle_reply`` path in ``picard/webservice/__init__.py``.
+    retries up to ``TEMP_ERRORS_RETRIES`` times on 503/429 and on transient
+    connection failures (connection reset, timeout, DNS hiccups), mirroring
+    Picard's ``_handle_reply`` path in ``picard/webservice/__init__.py``.
     """
     hostkey = hostkey_from_url(url)
-    last_error: urllib.error.HTTPError | None = None
+    last_error: Exception | None = None
     for attempt in range(TEMP_ERRORS_RETRIES + 1):
         wait, delay_ms = get_delay_to_next_request(hostkey)
         if wait:
@@ -242,6 +243,24 @@ def send_json(
                         attempt + 1,
                     )
                     continue
+            raise
+        except (urllib.error.URLError, ConnectionError, TimeoutError) as exc:
+            # Transient connection-level failures: the connect phase wraps the
+            # OSError in URLError (e.g. ECONNRESET -> "Connection reset by
+            # peer"), while a timeout/reset while reading the body surfaces as a
+            # raw ConnectionError/TimeoutError. HTTPError is a URLError subclass
+            # but is handled above, so this branch is connection-level only.
+            slow_down = True
+            last_error = exc
+            if attempt < TEMP_ERRORS_RETRIES:
+                reason = getattr(exc, "reason", exc)
+                logger.debug(
+                    "%s: connection error (%s), retrying (#%d)",
+                    hostkey,
+                    reason,
+                    attempt + 1,
+                )
+                continue
             raise
         finally:
             decrement_requests(hostkey)
