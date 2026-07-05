@@ -378,6 +378,22 @@ class DiscLookupRequest(BaseModel):
             "unless a concrete `discid` is given."
         ),
     )
+    barcode: str = Field(
+        default="",
+        description=(
+            "Release barcode (EAN/UPC) to find the release by instead of a "
+            "disc TOC. Mutually exclusive with `discid`/`toc` and with "
+            "`catalog_number`."
+        ),
+    )
+    catalog_number: str = Field(
+        default="",
+        description=(
+            "Label catalogue number (MusicBrainz `catalog-number`) to find "
+            "the release by instead of a disc TOC. Mutually exclusive with "
+            "`discid`/`toc` and with `barcode`."
+        ),
+    )
     preferred_release_countries: list[str] = Field(
         default_factory=list,
         description="Ordered ISO-3166-1 codes used to pick among matching pressings.",
@@ -416,6 +432,19 @@ class DiscTrackPayload(BaseModel):
 
 class DiscReleasePayload(BaseModel):
     release_id: str
+    discnumber: str | None = Field(
+        default=None,
+        description=(
+            "Position of the medium the disc TOC/DiscID matched within the "
+            "release. Filter `tracks` on `metadata.discnumber == discnumber` "
+            "to get the tracks of the physical disc. Null for barcode/"
+            "catalog_number lookups, which match a release, not a disc."
+        ),
+    )
+    totaldiscs: str | None = Field(
+        default=None,
+        description="Number of media in the release.",
+    )
     metadata: ReleaseMetadataPayload
     tracks: list[DiscTrackPayload]
 
@@ -509,10 +538,25 @@ def lookup(req: LookupRequest) -> dict:
     summary="CD DiscID/TOC lookup",
 )
 def lookup_disc(req: DiscLookupRequest) -> dict:
-    if req.discid.strip() in ("", "-") and not req.toc.strip():
+    barcode = req.barcode.strip()
+    catalog_number = req.catalog_number.strip()
+    has_disc = req.discid.strip() not in ("", "-") or bool(req.toc.strip())
+    if barcode and catalog_number:
         raise HTTPException(
             status_code=400,
-            detail="Provide a DiscID or a TOC (or both).",
+            detail="barcode and catalog_number are mutually exclusive.",
+        )
+    if (barcode or catalog_number) and has_disc:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "barcode/catalog_number and DiscID/TOC are mutually exclusive."
+            ),
+        )
+    if not (barcode or catalog_number or has_disc):
+        raise HTTPException(
+            status_code=400,
+            detail="Provide a DiscID or a TOC (or both), or a barcode or catalog_number.",
         )
     try:
         result = service.lookup_disc(
@@ -522,6 +566,8 @@ def lookup_disc(req: DiscLookupRequest) -> dict:
             metadata=(
                 AudioMetadata(**req.metadata.model_dump()) if req.metadata else None
             ),
+            barcode=barcode,
+            catalog_number=catalog_number,
         )
     except urllib.error.HTTPError as exc:
         if exc.code == 400:
@@ -605,6 +651,8 @@ def _serialize_disc_result(result: DiscLookupResult) -> dict:
         rel = result.release
         release = {
             "release_id": rel.release_id,
+            "discnumber": rel.discnumber or None,
+            "totaldiscs": rel.totaldiscs or None,
             "metadata": {
                 **_serialize_release_tags(rel.applied_release_tags),
                 "cover_art": _serialize_cover_art(rel.cover_art),

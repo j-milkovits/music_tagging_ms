@@ -130,6 +130,13 @@ class DiscRelease:
     release_credits: ReleaseCredits
     cover_art: CoverArt | None
     tracks: tuple[DiscTrack, ...]
+    # Which medium of the release the disc TOC/DiscID matched ("" for
+    # barcode/catalog-number lookups, which match a release, not a disc) and
+    # how many media the release has. Same values as the track-level
+    # discnumber/totaldiscs tags, so callers can filter `tracks` on
+    # discnumber == release.discnumber.
+    discnumber: str = ""
+    totaldiscs: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,21 +199,34 @@ class StandaloneTaggingService:
         toc: str,
         preferred_countries: Sequence[str] | None,
         metadata: AudioMetadata | None,
+        barcode: str = "",
+        catalog_number: str = "",
     ) -> DiscLookupResult:
-        """Resolve a CD by DiscID/TOC to MusicBrainz release metadata.
+        """Resolve a CD to MusicBrainz release metadata.
 
-        A disc usually matches several releases (pressings). We return the
-        single best release fully materialised, plus a lightweight `candidates`
-        list of every match so the caller can pick a different pressing.
+        Identified either by DiscID/TOC, or (mutually exclusive, enforced by
+        the API layer) by barcode or label catalogue number. A disc usually
+        matches several releases (pressings). We return the single best
+        release fully materialised, plus a lightweight `candidates` list of
+        every match so the caller can pick a different pressing.
         """
         countries = list(preferred_countries) if preferred_countries else []
-        payload = self.client.get_release_by_discid(discid, toc)
-        releases = payload.get("releases") or []
+        if barcode or catalog_number:
+            releases = self.client.find_releases_by_identifier(
+                barcode=barcode, catalog_number=catalog_number
+            )
+            not_found_reason = (
+                "No MusicBrainz release found for this barcode"
+                if barcode
+                else "No MusicBrainz release found for this catalog number"
+            )
+        else:
+            payload = self.client.get_release_by_discid(discid, toc)
+            releases = payload.get("releases") or []
+            not_found_reason = "No MusicBrainz release found for this disc"
         if not releases:
             return DiscLookupResult(
-                release=None,
-                candidates=(),
-                reason="No MusicBrainz release found for this disc",
+                release=None, candidates=(), reason=not_found_reason
             )
 
         candidates = tuple(self._disc_candidate(r) for r in releases)
@@ -214,7 +234,18 @@ class StandaloneTaggingService:
 
         release_full = self.client.get_release(best["id"])
         release_tracks = build_release_tracks(release_full, countries)
-        disc_release = self._materialise_disc_release(best["id"], release_tracks)
+        disc_release = self._materialise_disc_release(
+            best["id"],
+            release_tracks,
+            # Only a TOC/DiscID lookup matches a specific medium; identifier
+            # lookups match the release as a whole.
+            discnumber=(
+                ""
+                if (barcode or catalog_number)
+                else _matched_disc_position(discid, toc, best, release_full)
+            ),
+            totaldiscs=str(len(release_full.get("media") or [])),
+        )
         return DiscLookupResult(
             release=disc_release, candidates=candidates, reason=None
         )
@@ -273,7 +304,10 @@ class StandaloneTaggingService:
 
     @staticmethod
     def _materialise_disc_release(
-        release_id: str, release_tracks: Sequence[ReleaseTrack]
+        release_id: str,
+        release_tracks: Sequence[ReleaseTrack],
+        discnumber: str = "",
+        totaldiscs: str = "",
     ) -> DiscRelease:
         tracks: list[DiscTrack] = []
         release_tags: dict[str, str] = {}
@@ -303,6 +337,8 @@ class StandaloneTaggingService:
             release_credits=release_credits,
             cover_art=cover_art,
             tracks=tuple(tracks),
+            discnumber=discnumber,
+            totaldiscs=totaldiscs,
         )
 
     # ----- joint mode -----
@@ -622,6 +658,73 @@ class StandaloneTaggingService:
                 ),
             ),
         )
+
+
+def _matched_disc_position(
+    discid: str, toc: str, summary: dict, release_full: dict
+) -> str:
+    """Position of the medium the disc matched within the chosen release.
+
+    A discid/TOC lookup returns every medium of each release. For a concrete
+    DiscID the matching medium is the one whose `discs` list contains that id
+    (present on the lookup summary). A TOC-only fuzzy lookup does not mark
+    the matched medium at all, so re-derive it: compare the TOC's per-track
+    durations against each same-track-count medium of the full release and
+    take the closest. Empty when it cannot be determined.
+    """
+    disc = discid.strip()
+    if disc and disc != "-":
+        for medium in summary.get("media") or []:
+            if any(d.get("id") == disc for d in medium.get("discs") or []):
+                position = medium.get("position")
+                return str(position) if position is not None else ""
+        return ""
+
+    toc_lengths = _toc_track_lengths_ms(toc)
+    if not toc_lengths:
+        return ""
+    best_position = ""
+    best_diff: int | None = None
+    for medium in release_full.get("media") or []:
+        tracks = medium.get("tracks") or []
+        if len(tracks) != len(toc_lengths):
+            continue
+        diff = 0
+        for track, toc_ms in zip(tracks, toc_lengths, strict=True):
+            length = (
+                track.get("length")
+                or (track.get("recording") or {}).get("length")
+                or 0
+            )
+            diff += abs(int(length) - toc_ms)
+        if best_diff is None or diff < best_diff:
+            best_diff = diff
+            best_position = str(medium.get("position") or "")
+    return best_position
+
+
+def _toc_track_lengths_ms(toc: str) -> list[int]:
+    """Per-track lengths in milliseconds derived from a MusicBrainz TOC.
+
+    TOC format: first track, last track, leadout sector, then one start
+    sector per track; 75 sectors per second. Returns [] when malformed.
+    """
+    parts = toc.replace("+", " ").split()
+    try:
+        values = [int(p) for p in parts]
+    except ValueError:
+        return []
+    if len(values) < 4:
+        return []
+    first, last, leadout = values[0], values[1], values[2]
+    offsets = values[3:]
+    count = last - first + 1
+    if count <= 0 or len(offsets) != count:
+        return []
+    bounds = [*offsets, leadout]
+    return [
+        max(0, (bounds[i + 1] - bounds[i]) * 1000 // 75) for i in range(count)
+    ]
 
 
 def _make_stage2_score_fn(

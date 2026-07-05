@@ -93,6 +93,49 @@ def test_get_release_by_discid_400_propagates(monkeypatch: pytest.MonkeyPatch) -
         MusicBrainzClient().get_release_by_discid("-", "1+2")
 
 
+# ----- MusicBrainzClient.find_releases_by_identifier -----
+
+
+def test_find_releases_by_identifier_barcode_builds_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_send_json(factory, url):  # noqa: ANN001
+        captured["url"] = url
+        return {"releases": []}
+
+    monkeypatch.setattr(musicbrainz.ratecontrol, "send_json", fake_send_json)
+    MusicBrainzClient().find_releases_by_identifier(barcode="720642442524")
+    url = captured["url"]
+    assert "/release?" in url
+    assert "barcode%3A%22720642442524%22" in url  # barcode:"720642442524"
+    assert "dismax" not in url
+
+
+def test_find_releases_by_identifier_catno_quotes_spaces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_send_json(factory, url):  # noqa: ANN001
+        captured["url"] = url
+        return {"releases": []}
+
+    monkeypatch.setattr(musicbrainz.ratecontrol, "send_json", fake_send_json)
+    MusicBrainzClient().find_releases_by_identifier(catalog_number="GED 24425")
+    # catno:"GED 24425" — quoted phrase, space urlencoded as +.
+    assert "catno%3A%22GED+24425%22" in captured["url"]
+
+
+def test_find_releases_by_identifier_requires_exactly_one() -> None:
+    client = MusicBrainzClient()
+    with pytest.raises(ValueError):
+        client.find_releases_by_identifier()
+    with pytest.raises(ValueError):
+        client.find_releases_by_identifier(barcode="1", catalog_number="2")
+
+
 # ----- StandaloneTaggingService.lookup_disc -----
 
 
@@ -146,3 +189,94 @@ def test_lookup_disc_materialises_tracks_without_score_fields() -> None:
     assert track.applied_track_tags.get("title") == "Track 1"
     assert not hasattr(track, "score")
     assert not hasattr(track, "source_id")
+
+
+def _two_disc_release(release_id: str) -> dict:
+    """2-CD release: disc 1 has one ~200s track, disc 2 one ~180s track."""
+    release = _release_dict(release_id, "DE", "1991")
+    release["media"] = [
+        {
+            "position": 1,
+            "format": "CD",
+            "track-count": 1,
+            "discs": [{"id": "discid-cd1"}],
+            "tracks": [
+                {
+                    "id": "t1",
+                    "position": 1,
+                    "recording": {"id": "r1", "title": "Track 1", "length": 200000},
+                }
+            ],
+        },
+        {
+            "position": 2,
+            "format": "CD",
+            "track-count": 1,
+            "discs": [{"id": "discid-cd2"}],
+            "tracks": [
+                {
+                    "id": "t2",
+                    "position": 1,
+                    "recording": {"id": "r2", "title": "Track 2", "length": 180000},
+                }
+            ],
+        },
+    ]
+    return release
+
+
+def test_lookup_disc_discid_reports_matched_disc_position() -> None:
+    """A concrete DiscID pins the matched medium via its `discs` list."""
+    release = _two_disc_release("rel-2cd")
+    svc = _service_with([release])
+    result = svc.lookup_disc("discid-cd2", "", ["DE"], None)
+    assert result.release is not None
+    assert result.release.discnumber == "2"
+    assert result.release.totaldiscs == "2"
+    # Track-level discnumber tags let the caller select the matched disc.
+    matched = [
+        t
+        for t in result.release.tracks
+        if t.applied_track_tags.get("discnumber") == result.release.discnumber
+    ]
+    assert [t.track_id for t in matched] == ["t2"]
+
+
+def test_lookup_disc_toc_reports_matched_disc_position() -> None:
+    """A TOC-only lookup derives the matched medium from track durations:
+    1 track of (13650-150)/75 = 180s — disc 2, not disc 1 (200s)."""
+    release = _two_disc_release("rel-2cd")
+    svc = _service_with([release])
+    result = svc.lookup_disc("-", "1+1+13650+150", ["DE"], None)
+    assert result.release is not None
+    assert result.release.discnumber == "2"
+    assert result.release.totaldiscs == "2"
+
+
+# ----- barcode / catalog_number lookups -----
+
+
+def test_lookup_disc_by_barcode_skips_discid_lookup() -> None:
+    de = _release_dict("rel-DE", "DE", "1991")
+    svc = _service_with([de])
+    svc.client.find_releases_by_identifier.return_value = [de]
+    result = svc.lookup_disc("-", "", ["DE"], None, barcode="111")
+    svc.client.find_releases_by_identifier.assert_called_once_with(
+        barcode="111", catalog_number=""
+    )
+    svc.client.get_release_by_discid.assert_not_called()
+    assert result.release is not None
+    assert result.release.release_id == "rel-DE"
+    # No disc matched a specific medium — discnumber stays empty.
+    assert result.release.discnumber == ""
+    assert result.release.totaldiscs == "1"
+    assert len(result.candidates) == 1
+
+
+def test_lookup_disc_by_catalog_number_no_match_sets_reason() -> None:
+    svc = _service_with([])
+    svc.client.find_releases_by_identifier.return_value = []
+    result = svc.lookup_disc("-", "", [], None, catalog_number="GED 24425")
+    assert result.release is None
+    assert result.candidates == ()
+    assert result.reason == "No MusicBrainz release found for this catalog number"

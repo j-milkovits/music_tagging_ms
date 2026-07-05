@@ -51,9 +51,11 @@ def test_raises_after_exhausting_connection_retries() -> None:
     def fake_urlopen(_request, timeout=None):  # noqa: ANN001
         raise reset
 
-    with patch.object(ratecontrol.urllib.request, "urlopen", side_effect=fake_urlopen):
-        with pytest.raises(urllib.error.URLError):
-            ratecontrol.send_json(lambda: object(), URL)
+    with (
+        patch.object(ratecontrol.urllib.request, "urlopen", side_effect=fake_urlopen),
+        pytest.raises(urllib.error.URLError),
+    ):
+        ratecontrol.send_json(lambda: object(), URL)
 
 
 def test_http_error_other_than_503_429_is_not_retried() -> None:
@@ -63,7 +65,9 @@ def test_http_error_other_than_503_429_is_not_retried() -> None:
         calls["n"] += 1
         raise urllib.error.HTTPError(URL, 404, "Not Found", {}, None)
 
-    with patch.object(ratecontrol.urllib.request, "urlopen", side_effect=fake_urlopen):
-        with pytest.raises(urllib.error.HTTPError):
-            ratecontrol.send_json(lambda: object(), URL)
+    with (
+        patch.object(ratecontrol.urllib.request, "urlopen", side_effect=fake_urlopen),
+        pytest.raises(urllib.error.HTTPError),
+    ):
+        ratecontrol.send_json(lambda: object(), URL)
     assert calls["n"] == 1

@@ -252,6 +252,33 @@ def test_disc_lookup_requires_discid_or_toc(client: TestClient) -> None:
     assert res.status_code == 400
 
 
+def test_disc_lookup_rejects_barcode_plus_catalog_number(client: TestClient) -> None:
+    res = client.post(
+        "/api/disc",
+        json={"barcode": "720642442524", "catalog_number": "GED 24425"},
+        headers={"Authorization": "Bearer test-bearer-token"},
+    )
+    assert res.status_code == 400
+
+
+def test_disc_lookup_rejects_barcode_plus_toc(client: TestClient) -> None:
+    res = client.post(
+        "/api/disc",
+        json={"toc": _NEVERMIND_TOC, "barcode": "720642442524"},
+        headers={"Authorization": "Bearer test-bearer-token"},
+    )
+    assert res.status_code == 400
+
+
+def test_disc_lookup_rejects_catalog_number_plus_discid(client: TestClient) -> None:
+    res = client.post(
+        "/api/disc",
+        json={"discid": _DUETS_DISCID, "catalog_number": "GED 24425"},
+        headers={"Authorization": "Bearer test-bearer-token"},
+    )
+    assert res.status_code == 400
+
+
 @pytest.mark.vcr(
     cassette_library_dir=str(CASSETTE_DIR),
 )
@@ -281,6 +308,9 @@ def test_disc_lookup_returns_release_and_candidates(client: TestClient) -> None:
     assert rel is not None
     assert body["reason"] is None
     assert rel["release_id"]
+    # Which medium of the release the TOC matched, release-level.
+    assert rel["discnumber"] == "1"
+    assert rel["totaldiscs"] == "1"
     assert rel["metadata"]["title"] == "Nevermind"
     assert rel["metadata"]["artists"][0]["name"] == "Nirvana"
     cover_art = rel["metadata"].get("cover-art-archive")
@@ -297,6 +327,40 @@ def test_disc_lookup_returns_release_and_candidates(client: TestClient) -> None:
     # No file-match fields leak into the disc response.
     assert "score" not in track
     assert "source_id" not in track
+
+
+@pytest.mark.vcr(
+    cassette_library_dir=str(CASSETTE_DIR),
+)
+def test_disc_lookup_by_barcode(client: TestClient) -> None:
+    # Nirvana — Nevermind (DGC, US CD).
+    res = client.post(
+        "/api/disc",
+        json={
+            "barcode": "720642442524",
+            "preferred_release_countries": ["US"],
+        },
+        headers={"Authorization": "Bearer test-bearer-token"},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # Barcodes get reused (bootlegs share this one), so not every candidate
+    # is Nevermind — but the pressings dominate the list.
+    assert len(body["candidates"]) > 1
+    nevermind = [c for c in body["candidates"] if c["title"] == "Nevermind"]
+    assert len(nevermind) > len(body["candidates"]) / 2
+
+    rel = body["release"]
+    assert rel is not None
+    assert body["reason"] is None
+    assert rel["metadata"]["title"] == "Nevermind"
+    assert rel["metadata"]["artists"][0]["name"] == "Nirvana"
+    # MB stores some pressings' barcode with a leading zero (EAN-13 form).
+    assert rel["metadata"]["barcode"].lstrip("0") == "720642442524"
+    # A barcode identifies a release, not a physical disc — no matched medium.
+    assert rel["discnumber"] is None
+    assert rel["totaldiscs"] == "1"
+    assert len(rel["tracks"]) == 12
 
 
 # Real CD: Elton John — "Duets" (16 tracks). Looked up by MusicBrainz DiscID.
@@ -326,6 +390,8 @@ def test_disc_lookup_real_discid_elton_john_duets(client: TestClient) -> None:
     rel = body["release"]
     assert rel is not None
     assert body["reason"] is None
+    assert rel["discnumber"] == "1"
+    assert rel["totaldiscs"] == "1"
     assert rel["metadata"]["title"] == "Duets"
     assert rel["metadata"]["artists"][0]["name"] == "Elton John"
     assert len(rel["tracks"]) == 16

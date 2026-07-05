@@ -77,6 +77,36 @@ class MusicBrainzClient:
         )
         return payload.get("releases", [])
 
+    def find_releases_by_identifier(
+        self,
+        barcode: str = "",
+        catalog_number: str = "",
+        limit: int = 25,
+    ) -> list[dict]:
+        """Search releases by exact barcode or label catalogue number.
+
+        Exactly one of ``barcode``/``catalog_number`` must be given (the API
+        layer enforces mutual exclusivity). Uses the release search endpoint
+        with a field query (``barcode:``/``catno:``), so no ``dismax`` — the
+        DisMax parser has no field syntax. Returns release summaries in the
+        same shape as a discid lookup (artist-credit + media with track
+        counts), so the caller can rank and materialise them identically.
+        """
+        if bool(barcode) == bool(catalog_number):
+            raise ValueError("Exactly one of barcode or catalog_number is required")
+        field, value = ("barcode", barcode) if barcode else ("catno", catalog_number)
+        # Quote the value: catalogue numbers often contain spaces, and an
+        # unquoted `catno:(GED 24425)` would OR the terms.
+        payload = self._get_json(
+            "/release",
+            {
+                "query": f'{field}:"{_escape_lucene_query(value)}"',
+                "fmt": "json",
+                "limit": str(limit),
+            },
+        )
+        return payload.get("releases", [])
+
     def get_release(self, release_id: str) -> dict:
         return self._get_json(
             f"/release/{release_id}",

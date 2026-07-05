@@ -212,8 +212,12 @@ Notes:
 
 CD-ripping lookup: identify a disc by its MusicBrainz **DiscID** and/or **TOC**
 (table of contents) — no fingerprint, no AcoustID. Pass a concrete `discid`, or
-`-` to do a TOC-only fuzzy lookup. `metadata` is optional and only used to rank
-candidate pressings when re-tagging an existing rip.
+`-` to do a TOC-only fuzzy lookup. Alternatively identify the release by its
+**barcode** or label **catalogue number** (MusicBrainz release-search fields
+`barcode`/`catno`). `barcode`, `catalog_number`, and `discid`/`toc` are
+mutually exclusive — supplying more than one identification method is a `400`.
+`metadata` is optional and only used to rank candidate pressings when
+re-tagging an existing rip.
 
 Request:
 
@@ -224,6 +228,12 @@ Request:
   "preferred_release_countries": ["DE", "XE", "XW"],
   "metadata": { "release": "Nevermind" }      // optional, ranks pressings
 }
+```
+
+or, instead of `discid`/`toc`:
+
+```jsonc
+{ "barcode": "720642442524" }                 // or: { "catalog_number": "GED 24425" }
 ```
 
 A disc usually matches several releases (pressings/countries). The response
@@ -238,6 +248,9 @@ already the `release`, or re-query with that pressing's data).
 {
   "release": {
     "release_id": "...",
+    "discnumber": "1",                        // medium the TOC/DiscID matched;
+                                              // null for barcode/catno lookups
+    "totaldiscs": "1",                        // number of media in the release
     "metadata": { "title": "Nevermind", "artists": [ ... ], "cover_art_url": "...", ... },
     "tracks": [ { "title": "Smells Like Teen Spirit", "tracknumber": "1", "artists": [ ... ], ... } ]
   },
@@ -248,6 +261,11 @@ already the `release`, or re-query with that pressing's data).
   "reason": null                              // set when `release` is null (no match)
 }
 ```
+
+`tracks` always contains **every** track of the release (all media). For a
+multi-disc release, the release-level `discnumber` says which medium your TOC
+matched — filter `tracks[].metadata.discnumber == release.discnumber` to get
+the tracks of the physical disc in the drive.
 
 Best-release ranking: by `preferred_release_countries`, then (if `metadata` is
 supplied) by release-title/date similarity, then earliest date — deterministic.
