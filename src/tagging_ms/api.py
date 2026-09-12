@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
-from . import __version__, ratecontrol
+from . import __version__, health, ratecontrol
 from .joint_matcher import Thresholds
 from .models import (
     ArtistCredit,
@@ -212,10 +212,36 @@ async def _limit_body_size(
 # ----- Schemas -----
 
 
-class HealthResponse(BaseModel):
-    status: str = Field(description="Static service status string.")
+class MirrorHealthResponse(BaseModel):
+    reachable: bool = Field(description="ws/2 on the mirror answered within 2 s.")
+    schema_sequence: int | None = Field(default=None)
+    replication_sequence: int | None = Field(default=None)
+    last_replication: str | None = Field(default=None, description="Timestamp of the last applied replication packet.")
+    lag_hours: float | None = Field(default=None, description="Hours since the last replication packet.")
 
-    model_config = {"json_schema_extra": {"example": {"status": "ok"}}}
+
+class HealthResponse(BaseModel):
+    status: Literal["ok", "degraded"] = Field(
+        description="`degraded` when the mirror is unreachable or replication is more than 48 h behind."
+    )
+    mirror: MirrorHealthResponse | None = Field(
+        default=None, description="Present only when a MusicBrainz mirror is configured."
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "status": "ok",
+                "mirror": {
+                    "reachable": True,
+                    "schema_sequence": 30,
+                    "replication_sequence": 123456,
+                    "last_replication": "2026-09-19T03:05:12+00:00",
+                    "lag_hours": 6.4,
+                },
+            }
+        }
+    }
 
 
 class VersionResponse(BaseModel):
@@ -613,10 +639,23 @@ class DiscLookupResponse(BaseModel):
     "/api/health",
     tags=["health"],
     response_model=HealthResponse,
+    response_model_exclude_none=True,
     summary="Health check",
 )
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health_check() -> dict[str, object]:
+    if not health.is_mirror(service.client):
+        return {"status": "ok"}
+    mirror = health.mirror_health(service.client)
+    return {
+        "status": "degraded" if mirror.degraded else "ok",
+        "mirror": {
+            "reachable": mirror.reachable,
+            "schema_sequence": mirror.schema_sequence,
+            "replication_sequence": mirror.replication_sequence,
+            "last_replication": mirror.last_replication,
+            "lag_hours": mirror.lag_hours,
+        },
+    }
 
 
 @app.get(
