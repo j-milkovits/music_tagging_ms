@@ -6,11 +6,12 @@ import os
 import traceback
 import urllib.error
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Literal
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
@@ -40,6 +41,13 @@ logger = logging.getLogger("tagging_ms.api")
 # /api/version and keeps tracebacks out of responses. Anything internet-facing
 # runs with it set (deploy/compose.yml does).
 PRODUCTION = os.getenv("TAGGING_MS_ENV", "development").strip().lower() == "production"
+
+# Request-size limits. These bound memory per request; they are DoS controls,
+# not quotas. A default fpcalc fingerprint (120 s) is ~3.5k characters and a
+# double CD is ~40 tracks, so both caps leave real headroom.
+MAX_ITEMS = 64
+MAX_FINGERPRINT_CHARS = 16_000
+MAX_BODY_BYTES = 2 * 1024 * 1024
 
 app = FastAPI(
     title="Tagging Microservice",
@@ -144,6 +152,24 @@ async def _unhandled_exception(request: Request, exc: Exception) -> JSONResponse
     return JSONResponse(status_code=500, content={"detail": detail})
 
 
+@app.middleware("http")
+async def _limit_body_size(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    """Reject oversized bodies before they are read. Chunked uploads without a
+    Content-Length are refused outright; every legitimate client sends one."""
+    if request.method in ("POST", "PUT", "PATCH"):
+        length = request.headers.get("content-length")
+        if length is None or not length.isdigit():
+            return JSONResponse(status_code=411, content={"detail": "Content-Length required"})
+        if int(length) > MAX_BODY_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": f"Request body exceeds {MAX_BODY_BYTES} bytes"},
+            )
+    return await call_next(request)
+
+
 # ----- Schemas -----
 
 
@@ -186,7 +212,11 @@ class AudioMetadataPayload(BaseModel):
 
 class LookupItemPayload(BaseModel):
     source_id: str = Field(description="Caller-defined identifier echoed in the response.")
-    fingerprint: str = Field(description="Chromaprint fingerprint string (`fpcalc -json`).")
+    fingerprint: str = Field(
+        min_length=1,
+        max_length=MAX_FINGERPRINT_CHARS,
+        description="Chromaprint fingerprint string (`fpcalc -json`).",
+    )
     duration: int = Field(gt=0, description="Fingerprint duration in whole seconds.")
     metadata: AudioMetadataPayload | None = Field(
         default=None,
@@ -228,7 +258,8 @@ class LookupThresholds(BaseModel):
 class LookupRequest(BaseModel):
     items: list[LookupItemPayload] = Field(
         min_length=1,
-        description="Files to resolve in this batch.",
+        max_length=MAX_ITEMS,
+        description=f"Files to resolve in this batch (at most {MAX_ITEMS}).",
     )
     joint: bool = Field(
         default=True,
