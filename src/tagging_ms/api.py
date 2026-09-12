@@ -5,10 +5,12 @@ import logging
 import os
 import traceback
 import urllib.error
+import uuid
 from typing import Literal
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
@@ -34,6 +36,11 @@ load_dotenv(override=True)
 
 logger = logging.getLogger("tagging_ms.api")
 
+# TAGGING_MS_ENV=production turns off the interactive API docs, trims
+# /api/version and keeps tracebacks out of responses. Anything internet-facing
+# runs with it set (deploy/compose.yml does).
+PRODUCTION = os.getenv("TAGGING_MS_ENV", "development").strip().lower() == "production"
+
 app = FastAPI(
     title="Tagging Microservice",
     version=__version__,
@@ -49,6 +56,9 @@ app = FastAPI(
         {"name": "lookup", "description": "Joint or per-file AcoustID lookup."},
         {"name": "disc", "description": "CD DiscID/TOC lookup (no fingerprint)."},
     ],
+    docs_url=None if PRODUCTION else "/docs",
+    redoc_url=None if PRODUCTION else "/redoc",
+    openapi_url=None if PRODUCTION else "/openapi.json",
 )
 
 service = StandaloneTaggingService()
@@ -72,6 +82,34 @@ def require_bearer(
         )
 
 
+def _internal_error(exc: BaseException) -> HTTPException:
+    """Build the 500 for an unexpected failure; call from inside an ``except``.
+
+    The traceback always goes to the log under a correlation id. In production
+    the response carries only that id; in development it also carries the
+    traceback for convenience.
+    """
+    correlation_id = uuid.uuid4().hex[:12]
+    logger.exception("internal error [%s]", correlation_id)
+    detail: dict[str, str] = {"error": "internal error", "correlation_id": correlation_id}
+    if not PRODUCTION:
+        detail["error"] = str(exc)
+        detail["traceback"] = traceback.format_exc()
+    return HTTPException(status_code=500, detail=detail)
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+    """Catch-all so nothing outside the handlers' own try blocks leaks a traceback."""
+    correlation_id = uuid.uuid4().hex[:12]
+    logger.error("unhandled error [%s] on %s", correlation_id, request.url.path, exc_info=exc)
+    detail: dict[str, str] = {"error": "internal error", "correlation_id": correlation_id}
+    if not PRODUCTION:
+        detail["error"] = str(exc)
+        detail["traceback"] = "".join(traceback.format_exception(exc))
+    return JSONResponse(status_code=500, content={"detail": detail})
+
+
 # ----- Schemas -----
 
 
@@ -84,7 +122,7 @@ class HealthResponse(BaseModel):
 class VersionResponse(BaseModel):
     name: str
     version: str
-    git_sha: str
+    git_sha: str | None = Field(default=None, description="Omitted in production.")
 
     model_config = {
         "json_schema_extra": {
@@ -481,14 +519,14 @@ def health() -> dict[str, str]:
     "/api/version",
     tags=["health"],
     response_model=VersionResponse,
+    response_model_exclude_none=True,
     summary="Service version",
 )
 def version() -> dict[str, str]:
-    return {
-        "name": "tagging-ms",
-        "version": __version__,
-        "git_sha": os.getenv("GIT_SHA", "unknown"),
-    }
+    info = {"name": "tagging-ms", "version": __version__}
+    if not PRODUCTION:
+        info["git_sha"] = os.getenv("GIT_SHA", "unknown")
+    return info
 
 
 @app.post(
@@ -521,11 +559,7 @@ def lookup(req: LookupRequest) -> dict:
             search_limit=req.search_limit,
         )
     except Exception as exc:
-        logger.exception("lookup failed")
-        raise HTTPException(
-            status_code=500,
-            detail={"error": str(exc), "traceback": traceback.format_exc()},
-        ) from exc
+        raise _internal_error(exc) from exc
 
     return _serialize_lookup_result(result)
 
@@ -574,17 +608,9 @@ def lookup_disc(req: DiscLookupRequest) -> dict:
             raise HTTPException(
                 status_code=400, detail="Invalid DiscID or TOC"
             ) from exc
-        logger.exception("disc lookup failed")
-        raise HTTPException(
-            status_code=500,
-            detail={"error": str(exc), "traceback": traceback.format_exc()},
-        ) from exc
+        raise _internal_error(exc) from exc
     except Exception as exc:
-        logger.exception("disc lookup failed")
-        raise HTTPException(
-            status_code=500,
-            detail={"error": str(exc), "traceback": traceback.format_exc()},
-        ) from exc
+        raise _internal_error(exc) from exc
 
     return _serialize_disc_result(result)
 
