@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from .acoustid import AcoustIdClient, AcoustIdLookupResult
@@ -157,6 +158,21 @@ class StandaloneTaggingService:
             client_key=os.getenv("TAGGING_MS_ACOUSTID_API_KEY", ""),
             musicbrainz_client=self.client,
         )
+        # Parallel release fetches are bounded by the client's concurrency,
+        # which the rate limiter's congestion window already enforces per host.
+        # Test doubles may not carry the attribute; fall back to sequential.
+        workers = getattr(self.client, "concurrency", 1)
+        self.release_workers = workers if isinstance(workers, int) else 1
+
+    # ----- upstream fetches -----
+
+    def _fetch_releases(self, release_ids: Sequence[str]) -> list[dict]:
+        """Fetch full releases in the given order, in parallel where allowed."""
+        workers = min(self.release_workers, len(release_ids))
+        if workers <= 1:
+            return [self.client.get_release(rid) for rid in release_ids]
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            return list(pool.map(self.client.get_release, release_ids))
 
     # ----- public API -----
 
@@ -381,8 +397,8 @@ class StandaloneTaggingService:
         joint_releases: list[MaterialisedRelease] = []
         rescue_targets: set[str] = set(stage1.unmatched_file_ids)
 
-        for selection in stage1.selections:
-            release_full = self.client.get_release(selection.release_id)
+        release_fulls = self._fetch_releases([s.release_id for s in stage1.selections])
+        for selection, release_full in zip(stage1.selections, release_fulls, strict=True):
             release_tracks = build_release_tracks(
                 release_full, list(preferred_countries)
             )
