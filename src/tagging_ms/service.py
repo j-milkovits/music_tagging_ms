@@ -8,6 +8,7 @@ without joint scoring.
 
 from __future__ import annotations
 
+import contextvars
 import os
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -171,8 +172,15 @@ class StandaloneTaggingService:
         workers = min(self.release_workers, len(release_ids))
         if workers <= 1:
             return [self.client.get_release(rid) for rid in release_ids]
+        # Each task runs in its own copy of the caller's context (a Context
+        # cannot be entered by two threads at once) so the per-request
+        # upstream counters in ratecontrol.REQUEST_STATS keep working.
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            return list(pool.map(self.client.get_release, release_ids))
+            futures = [
+                pool.submit(contextvars.copy_context().run, self.client.get_release, rid)
+                for rid in release_ids
+            ]
+            return [f.result() for f in futures]
 
     # ----- public API -----
 

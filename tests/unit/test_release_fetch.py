@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 from unittest.mock import MagicMock
 
+from tagging_ms import ratecontrol
 from tagging_ms.service import StandaloneTaggingService
 
 
@@ -41,3 +42,20 @@ def test_sequential_when_concurrency_is_one() -> None:
 def test_mock_client_without_concurrency_falls_back_to_sequential() -> None:
     service = StandaloneTaggingService(client=MagicMock(), acoustid_client=MagicMock())
     assert service.release_workers == 1
+
+
+def test_parallel_fetches_report_into_the_request_counters() -> None:
+    class CountingClient(_StubClient):
+        def get_release(self, release_id: str) -> dict:
+            ratecontrol._count("upstream_requests")
+            return super().get_release(release_id)
+
+    client = CountingClient(concurrency=3)
+    service = StandaloneTaggingService(client=client, acoustid_client=MagicMock())  # type: ignore[arg-type]
+    stats: dict[str, int] = {}
+    token = ratecontrol.REQUEST_STATS.set(stats)
+    try:
+        service._fetch_releases(["a", "b", "c"])
+    finally:
+        ratecontrol.REQUEST_STATS.reset(token)
+    assert stats == {"upstream_requests": 3}

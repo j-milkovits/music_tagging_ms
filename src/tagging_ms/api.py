@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 import os
+import time
 import traceback
 import urllib.error
 import uuid
@@ -15,7 +17,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
-from . import __version__
+from . import __version__, ratecontrol
 from .joint_matcher import Thresholds
 from .models import (
     ArtistCredit,
@@ -36,6 +38,7 @@ from .service import (
 load_dotenv(override=True)
 
 logger = logging.getLogger("tagging_ms.api")
+access_log = logging.getLogger("tagging_ms.access")
 
 # TAGGING_MS_ENV=production turns off the interactive API docs, trims
 # /api/version and keeps tracebacks out of responses. Anything internet-facing
@@ -150,6 +153,42 @@ async def _unhandled_exception(request: Request, exc: Exception) -> JSONResponse
         detail["error"] = str(exc)
         detail["traceback"] = "".join(traceback.format_exception(exc))
     return JSONResponse(status_code=500, content={"detail": detail})
+
+
+@app.middleware("http")
+async def _access_log(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    """One JSON line per request: who, what, outcome, latency, upstream cost.
+
+    ``key_label`` and ``item_count`` are filled in by the auth dependency and
+    the handlers via ``request.state``; ``upstream_*`` come from the rate
+    limiter's per-request counters.
+    """
+    stats: dict[str, int] = {}
+    token = ratecontrol.REQUEST_STATS.set(stats)
+    started = time.perf_counter()
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    finally:
+        ratecontrol.REQUEST_STATS.reset(token)
+        record = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "key": getattr(request.state, "key_label", None),
+            "ip": request.headers.get("cf-connecting-ip")
+            or (request.client.host if request.client else None),
+            "method": request.method,
+            "path": request.url.path,
+            "items": getattr(request.state, "item_count", None),
+            "status": status_code,
+            "ms": round((time.perf_counter() - started) * 1000, 1),
+            "upstream_requests": stats.get("upstream_requests", 0),
+            "upstream_retries": stats.get("upstream_retries", 0),
+        }
+        access_log.info(json.dumps(record, separators=(",", ":")))
 
 
 @app.middleware("http")
@@ -601,7 +640,8 @@ def version() -> dict[str, str]:
     dependencies=[Depends(require_bearer)],
     summary="Joint or per-file AcoustID lookup",
 )
-def lookup(req: LookupRequest) -> dict:
+def lookup(req: LookupRequest, request: Request) -> dict:
+    request.state.item_count = len(req.items)
     try:
         items = [
             LookupItem(

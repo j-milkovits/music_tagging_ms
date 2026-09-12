@@ -8,6 +8,7 @@ thread pool).
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import math
@@ -37,6 +38,20 @@ LAST_REQUEST_TIMES: dict[HostKey, float] = defaultdict(lambda: 0.0)
 
 
 _lock = threading.Lock()
+
+# Per-request upstream statistics, keyed by the request's context. The value
+# is a mutable dict so worker threads running in a copied context (FastAPI's
+# threadpool, the release-fetch pool) increment the same counters the access
+# log middleware reads afterwards.
+REQUEST_STATS: contextvars.ContextVar[dict[str, int] | None] = contextvars.ContextVar(
+    "tagging_ms_request_stats", default=None
+)
+
+
+def _count(stat: str) -> None:
+    stats = REQUEST_STATS.get()
+    if stats is not None:
+        stats[stat] = stats.get(stat, 0) + 1
 
 
 def hostkey_from_url(url: str) -> HostKey:
@@ -236,6 +251,9 @@ def send_json(
     hostkey = hostkey_from_url(url)
     last_error: Exception | None = None
     for attempt in range(TEMP_ERRORS_RETRIES + 1):
+        if attempt:
+            _count("upstream_retries")
+        _count("upstream_requests")
         wait, delay_ms = get_delay_to_next_request(hostkey)
         if wait:
             if delay_ms == sys.maxsize:
