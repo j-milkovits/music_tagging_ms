@@ -69,6 +69,9 @@ disable_error_code = ["dict-item"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--record-mode=none -ra"
+markers = [
+    "mirror: live checks against a MusicBrainz mirror (needs TAGGING_MS_MB_BASE_URL)",
+]
 filterwarnings = [
     "ignore::DeprecationWarning:vcr.*",
 ]

@@ -27,7 +27,8 @@ make install               # uv sync
 uv run tagging-ms          # binds to TAGGING_MS_HOST:TAGGING_MS_PORT
 ```
 
-For development with auto-reload:
+For development with auto-reload (**localhost only** — never on an internet-facing
+instance; the deployment below runs without it):
 
 ```bash
 uv run uvicorn tagging_ms.api:app --reload
@@ -331,3 +332,32 @@ cassettes can be committed safely.
 
 GPL-2.0, matching the upstream MusicBrainz Picard project from which the
 matching and tag-extraction logic is derived. See [LICENSE](LICENSE).
+
+## Deploying against a MusicBrainz mirror
+
+`deploy/compose.yml` runs the service hardened (read-only rootfs, dropped capabilities,
+resource limits, `TAGGING_MS_ENV=production`) next to a `cloudflared` container, joined to
+the `musicbrainz-docker` network so `TAGGING_MS_MB_BASE_URL=http://musicbrainz:5000/ws/2`
+resolves. Secrets live in `deploy/.env` (see `deploy/.env.example`); the image contains none.
+
+```bash
+cd deploy && cp .env.example .env && chmod 600 .env   # fill in keys and TUNNEL_TOKEN
+docker compose up -d --build
+```
+
+Mirror-related settings (`.env_example` has the full list):
+
+| Variable | Public API | Mirror |
+|---|---|---|
+| `TAGGING_MS_MB_BASE_URL` | `https://musicbrainz.org/ws/2` | `http://musicbrainz:5000/ws/2` |
+| `TAGGING_MS_MB_RATE_LIMIT_MS` | `1000` | `0` |
+| `TAGGING_MS_MB_CONCURRENCY` | `1` | `8` |
+
+The service refuses to start with mirror limits against `musicbrainz.org`. Rollback is the
+three values above plus a restart.
+
+Verification against a running mirror: `scripts/mirror_diff.sh` diffs ws/2 responses with
+the public API, and `pytest -m mirror -p no:recording` runs live checks (skipped unless
+`TAGGING_MS_MB_BASE_URL` points at a mirror). `/api/health` reports mirror reachability and
+replication lag when a mirror is configured. The full migration procedure is in
+`docs/mirror-migration-runbook.md`.
