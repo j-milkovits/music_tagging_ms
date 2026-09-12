@@ -1,0 +1,68 @@
+# Production stack for the home server: the tagging service plus the Cloudflare
+# tunnel in front of it. Nothing publishes a host port — the tunnel reaches the
+# service on the private `tagging` network, and the service reaches the
+# MusicBrainz mirror on musicbrainz-docker's network. Secrets come from
+# deploy/.env at runtime (see .env.example); nothing is baked into the image.
+#
+#   cd deploy && docker compose up -d --build
+#
+services:
+  tagging-ms:
+    build:
+      context: ..
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+    image: tagging-ms:latest
+    env_file: .env
+    environment:
+      TAGGING_MS_ENV: production
+      TAGGING_MS_HOST: 0.0.0.0
+      TAGGING_MS_PORT: "8000"
+    volumes:
+      # Written by the VM's replication-status cron (runbook 3.6); read by /api/health.
+      - /run/mirror:/run/mirror:ro
+    networks: [tagging, mirror]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1g
+    healthcheck:
+      # No curl in the slim image; the venv python is on PATH.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  cloudflared:
+    # Pin by digest after the first pull:
+    #   docker inspect --format '{{index .RepoDigests 0}}' cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+    networks: [tagging]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256m
+    depends_on:
+      tagging-ms:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  tagging: {}
+  mirror:
+    external: true
+    name: musicbrainz-docker_default

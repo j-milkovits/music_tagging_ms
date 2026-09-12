@@ -13,3 +13,6 @@ tests
 examples
 REFACTOR_PLAN.md
 joint_matching_spec.md
+.env
+deploy
+docs

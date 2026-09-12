@@ -20,3 +20,6 @@ wheels/
 # Audio fixtures (provided locally; never committed)
 tests/fixtures/audio/*
 !tests/fixtures/audio/.gitkeep
+
+# Deployment secrets
+deploy/.env
