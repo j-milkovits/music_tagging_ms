@@ -14,18 +14,45 @@ from .models import ArtistCredit, AudioMetadata
 logger = logging.getLogger(__name__)
 
 DEFAULT_USER_AGENT = "tagging-ms/0.1"
+DEFAULT_BASE_URL = "https://musicbrainz.org/ws/2"
+
+# The public API allows one request per second per client, sequentially.
+# Anything faster gets the source IP blocked, so a config that points at
+# musicbrainz.org with mirror-grade limits refuses to start.
+PUBLIC_API_HOST_SUFFIX = "musicbrainz.org"
+PUBLIC_API_MIN_DELAY_MS = 1000
 
 
 class MusicBrainzClient:
     def __init__(
         self,
-        base_url: str = "https://musicbrainz.org/ws/2",
+        base_url: str | None = None,
         user_agent: str | None = None,
+        rate_limit_ms: int | None = None,
+        concurrency: int | None = None,
     ) -> None:
+        if base_url is None:
+            base_url = os.getenv("TAGGING_MS_MB_BASE_URL", DEFAULT_BASE_URL)
         self.base_url = base_url.rstrip("/")
         self.user_agent = user_agent or os.getenv(
             "TAGGING_MS_USER_AGENT", DEFAULT_USER_AGENT
         )
+        self.rate_limit_ms = (
+            rate_limit_ms
+            if rate_limit_ms is not None
+            else int(os.getenv("TAGGING_MS_MB_RATE_LIMIT_MS", str(PUBLIC_API_MIN_DELAY_MS)))
+        )
+        self.concurrency = (
+            concurrency
+            if concurrency is not None
+            else int(os.getenv("TAGGING_MS_MB_CONCURRENCY", "1"))
+        )
+        if self.rate_limit_ms < 0 or self.concurrency < 1:
+            raise ValueError(
+                "TAGGING_MS_MB_RATE_LIMIT_MS must be >= 0 and TAGGING_MS_MB_CONCURRENCY >= 1"
+            )
+        _check_public_api_limits(self.base_url, self.rate_limit_ms, self.concurrency)
+        ratecontrol.configure_host(self.base_url, self.rate_limit_ms, self.concurrency)
 
     def find_tracks(self, metadata: AudioMetadata, limit: int = 10) -> list[dict]:
         query_args = self._build_track_query_args(metadata)
@@ -213,6 +240,18 @@ class MusicBrainzClient:
 
 _LUCENE_SPECIAL_CHARS_RE = re.compile(r'([+\-&|!(){}\[\]\^"~*?:\\/])')
 _TOPIC_SUFFIX_RE = re.compile(r"\s+-\s+topic$", re.IGNORECASE)
+
+
+def _check_public_api_limits(base_url: str, rate_limit_ms: int, concurrency: int) -> None:
+    host = urllib.parse.urlsplit(base_url).hostname or ""
+    is_public = host == PUBLIC_API_HOST_SUFFIX or host.endswith("." + PUBLIC_API_HOST_SUFFIX)
+    if is_public and (rate_limit_ms < PUBLIC_API_MIN_DELAY_MS or concurrency > 1):
+        raise RuntimeError(
+            f"Refusing to start: {base_url} is the public MusicBrainz API, which allows "
+            f"1 request/s sequentially, but TAGGING_MS_MB_RATE_LIMIT_MS={rate_limit_ms} "
+            f"and TAGGING_MS_MB_CONCURRENCY={concurrency}. Point TAGGING_MS_MB_BASE_URL "
+            "at a mirror or restore the public limits."
+        )
 
 
 def _escape_lucene_query(text: str) -> str:

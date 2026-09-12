@@ -54,6 +54,22 @@ def set_minimum_delay_for_url(url: str, delay_ms: int) -> None:
     set_minimum_delay(hostkey_from_url(url), delay_ms)
 
 
+def configure_host(url: str, delay_ms: int, concurrency: int = 1) -> None:
+    """Set the steady-state request spacing and initial window for ``url``'s host.
+
+    Unknown hosts default to 1000 ms spacing and a congestion window of one
+    request, which is correct for the public MusicBrainz API but makes a local
+    mirror needlessly serial. ``delay_ms=0`` disables spacing entirely and
+    ``concurrency`` seeds the window so parallel requests are allowed from the
+    first call instead of after slow-start has opened it.
+    """
+    hostkey = hostkey_from_url(url)
+    with _lock:
+        REQUEST_DELAY_MINIMUM[hostkey] = int(delay_ms)
+        REQUEST_DELAY[hostkey] = int(delay_ms)
+        CONGESTION_WINDOW_SIZE[hostkey] = float(max(1, concurrency))
+
+
 def current_delay(hostkey: HostKey) -> int:
     with _lock:
         return REQUEST_DELAY[hostkey]
