@@ -65,21 +65,55 @@ service = StandaloneTaggingService()
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
+def _configured_keys() -> dict[str, str]:
+    """Bearer keys as ``{key: label}``.
+
+    ``TAGGING_MS_API_KEYS`` holds ``label=key`` pairs separated by commas, one
+    per client, so a single leaked key can be revoked without touching the
+    others. ``TAGGING_MS_API_KEY`` is still honoured as one key labelled
+    ``default`` for local development. Read per request so a key rotation is
+    a restart away, not a rebuild.
+    """
+    keys: dict[str, str] = {}
+    for pair in os.getenv("TAGGING_MS_API_KEYS", "").split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        label, sep, key = (part.strip() for part in pair.partition("="))
+        if not sep or not label or not key:
+            raise ValueError(f"TAGGING_MS_API_KEYS entry is not label=key: {pair!r}")
+        keys[key] = label
+    single = os.getenv("TAGGING_MS_API_KEY", "").strip()
+    if single:
+        keys[single] = "default"
+    return keys
+
+
 def require_bearer(
+    request: Request,
     creds: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),  # noqa: B008
-) -> None:
-    expected = os.getenv("TAGGING_MS_API_KEY", "")
-    if not expected:
+) -> str:
+    """Authenticate the request; returns the client label and stores it on ``request.state``."""
+    try:
+        keys = _configured_keys()
+    except ValueError as exc:
+        logger.error("%s", exc)
+        keys = {}
+    if not keys:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="TAGGING_MS_API_KEY is not configured",
+            detail="No API keys are configured",
         )
-    if creds is None or not hmac.compare_digest(creds.credentials, expected):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing bearer token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    if creds is not None:
+        for key, label in keys.items():
+            if hmac.compare_digest(creds.credentials, key):
+                request.state.key_label = label
+                return label
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or missing bearer token",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 def _internal_error(exc: BaseException) -> HTTPException:
