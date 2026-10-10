@@ -159,8 +159,6 @@ class StandaloneTaggingService:
             client_key=os.getenv("TAGGING_MS_ACOUSTID_API_KEY", ""),
             musicbrainz_client=self.client,
         )
-        # Parallel release fetches are bounded by the client's concurrency,
-        # which the rate limiter's congestion window already enforces per host.
         # Test doubles may not carry the attribute; fall back to sequential.
         workers = getattr(self.client, "concurrency", 1)
         self.release_workers = workers if isinstance(workers, int) else 1
@@ -172,9 +170,7 @@ class StandaloneTaggingService:
         workers = min(self.release_workers, len(release_ids))
         if workers <= 1:
             return [self.client.get_release(rid) for rid in release_ids]
-        # Each task runs in its own copy of the caller's context (a Context
-        # cannot be entered by two threads at once) so the per-request
-        # upstream counters in ratecontrol.REQUEST_STATS keep working.
+        # One context copy per task: a Context cannot be entered by two threads.
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = [
                 pool.submit(contextvars.copy_context().run, self.client.get_release, rid)

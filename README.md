@@ -335,17 +335,17 @@ matching and tag-extraction logic is derived. See [LICENSE](LICENSE).
 
 ## Deploying against a MusicBrainz mirror
 
-`deploy/compose.yml` runs the service hardened (read-only rootfs, dropped capabilities,
-resource limits, `TAGGING_MS_ENV=production`) next to a `cloudflared` container, joined to
-the `musicbrainz-docker` network so `TAGGING_MS_MB_BASE_URL=http://musicbrainz:5000/ws/2`
-resolves. Secrets live in `deploy/.env` (see `deploy/.env.example`); the image contains none.
+`deploy/compose.yml` runs the service next to a local `musicbrainz-docker` mirror: read-only
+rootfs, dropped capabilities, resource limits, `TAGGING_MS_ENV=production`. It joins the
+mirror's Docker network so `http://musicbrainz:5000/ws/2` resolves, and has no route to
+Postgres or Solr. Secrets come from `deploy/.env` at runtime; the image contains none.
 
 ```bash
-cd deploy && cp .env.example .env && chmod 600 .env   # fill in keys and TUNNEL_TOKEN
-docker compose up -d --build
+cd deploy && cp .env.example .env && chmod 600 .env
+GIT_SHA=$(git rev-parse --short HEAD) docker compose up -d --build
 ```
 
-Mirror-related settings (`.env_example` has the full list):
+### Mirror settings
 
 | Variable | Public API | Mirror |
 |---|---|---|
@@ -353,11 +353,56 @@ Mirror-related settings (`.env_example` has the full list):
 | `TAGGING_MS_MB_RATE_LIMIT_MS` | `1000` | `0` |
 | `TAGGING_MS_MB_CONCURRENCY` | `1` | `8` |
 
-The service refuses to start with mirror limits against `musicbrainz.org`. Rollback is the
-three values above plus a restart.
+The service refuses to start with mirror limits pointed at `musicbrainz.org` — the public API
+allows one sequential request per second, and exceeding it gets the source IP blocked.
+Rollback is these three values plus a restart.
 
-Verification against a running mirror: `scripts/mirror_diff.sh` diffs ws/2 responses with
-the public API, and `pytest -m mirror -p no:recording` runs live checks (skipped unless
-`TAGGING_MS_MB_BASE_URL` points at a mirror). `/api/health` reports mirror reachability and
-replication lag when a mirror is configured. The full migration procedure is in
-`docs/mirror-migration-runbook.md`.
+### Port binding
+
+`compose.yml` publishes `8000:8000` with no explicit address. Docker writes its own iptables
+rules and bypasses host firewalls, so a published port is world-reachable regardless of
+`ufw`. Set the daemon default to loopback on the host:
+
+```json
+/* /etc/docker/daemon.json */
+{ "ip": "127.0.0.1" }
+```
+
+Every `-p` binding then defaults to `127.0.0.1`; anything meant to be public must say
+`0.0.0.0:` explicitly. Check with `ss -tlnp | grep 8000` after deploying. Reach the API over
+an SSH tunnel, or add a reverse proxy to the `tagging` network for TLS.
+
+### Production mode
+
+`TAGGING_MS_ENV=production` disables `/docs`, `/redoc` and `/openapi.json`, drops `git_sha`
+from `/api/version`, and replaces tracebacks in 500 responses with a correlation ID that is
+logged alongside the full exception. Never run `uvicorn --reload` on a deployed instance.
+
+### API keys
+
+`TAGGING_MS_API_KEYS` holds `label=key` pairs, one per client, so a single leaked key can be
+revoked without disrupting the others. The matched label is logged with every request.
+Rotation is an env edit plus a restart. `TAGGING_MS_API_KEY` still works as one key labelled
+`default` for local development.
+
+Without `TAGGING_MS_ACOUSTID_API_KEY` the service falls back to Picard's shared key. That is
+fine locally and must not be used for a deployment.
+
+### Request limits
+
+`items[]` is capped at 64, fingerprints at 16k characters, and request bodies at 2 MiB
+(rejected before authentication). `uvicorn` runs with `limit_concurrency=32`. These bound
+memory and worker occupancy per request; they are not quotas.
+
+### Health
+
+`/api/health` reports mirror reachability and replication lag, and returns `degraded` when
+the mirror is unreachable or the last replication packet is older than 48 h. The replication
+figures are read from `/run/mirror/replication-status.json`, written by a cron on the host —
+the service has no database access of its own.
+
+### Verification
+
+`scripts/mirror_diff.sh` diffs ws/2 responses between the mirror and the public API.
+`pytest -m mirror -p no:recording` runs live checks against a mirror, skipped unless
+`TAGGING_MS_MB_BASE_URL` points at one.

@@ -21,8 +21,6 @@ def main() -> None:
         host=host,
         port=port,
         reload=False,
-        # Bound the number of in-flight requests so a burst of slow upstream
-        # lookups cannot pin the process; excess requests get 503 immediately.
         limit_concurrency=int(os.getenv("TAGGING_MS_MAX_CONCURRENT_REQUESTS", "32")),
         timeout_keep_alive=5,
     )

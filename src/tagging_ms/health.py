@@ -1,10 +1,5 @@
-"""Mirror health for /api/health.
-
-Two signals: can the MusicBrainz mirror be reached, and how far behind is its
-replication. The replication figures come from a small JSON file the VM's
-cron writes from ``replication_control`` (see the migration runbook, 3.6) —
-the service deliberately has no route to Postgres itself.
-"""
+"""Mirror health for /api/health: reachability, and replication lag read from a
+JSON file written by the host's cron (the service has no route to Postgres)."""
 
 from __future__ import annotations
 
@@ -20,7 +15,6 @@ from .musicbrainz import PUBLIC_API_HOST_SUFFIX, MusicBrainzClient
 
 logger = logging.getLogger(__name__)
 
-# Any release known to exist; the probe only cares that ws/2 answers.
 PROBE_RELEASE_ID = "2dc5dfc7-61df-4948-8c6b-e25a4cd039c8"
 PROBE_TIMEOUT_S = 2.0
 DEFAULT_STATUS_FILE = "/run/mirror/replication-status.json"
@@ -46,7 +40,7 @@ def is_mirror(client: MusicBrainzClient) -> bool:
 
 
 def probe(client: MusicBrainzClient) -> bool:
-    """Direct request, bypassing the rate limiter — this is a liveness check."""
+    """Direct request, bypassing the rate limiter."""
     url = f"{client.base_url}/release/{PROBE_RELEASE_ID}?fmt=json"
     req = urllib.request.Request(
         url,

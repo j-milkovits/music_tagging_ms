@@ -16,9 +16,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_USER_AGENT = "tagging-ms/0.1"
 DEFAULT_BASE_URL = "https://musicbrainz.org/ws/2"
 
-# The public API allows one request per second per client, sequentially.
-# Anything faster gets the source IP blocked, so a config that points at
-# musicbrainz.org with mirror-grade limits refuses to start.
 PUBLIC_API_HOST_SUFFIX = "musicbrainz.org"
 PUBLIC_API_MIN_DELAY_MS = 1000
 

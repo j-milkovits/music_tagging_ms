@@ -26,6 +26,5 @@ USER appuser
 
 EXPOSE 8000
 
-# Start the installed entrypoint directly: `uv run` wants to write to the venv and
-# cache, which a read-only rootfs (deploy/compose.yml) forbids.
+# `uv run` needs a writable venv, which the read-only rootfs forbids.
 CMD ["tagging-ms"]

@@ -24,20 +24,20 @@ def _auth(key: str) -> dict[str, str]:
 
 
 def test_parses_label_key_pairs_and_single_key_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TAGGING_MS_API_KEYS", " laptop = aaa , papa=bbb,, ")
+    monkeypatch.setenv("TAGGING_MS_API_KEYS", " client-a = aaa , client-b=bbb,, ")
     monkeypatch.setenv("TAGGING_MS_API_KEY", "ccc")
-    assert _configured_keys() == {"aaa": "laptop", "bbb": "papa", "ccc": "default"}
+    assert _configured_keys() == {"aaa": "client-a", "bbb": "client-b", "ccc": "default"}
 
 
 def test_each_key_resolves_to_its_label(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TAGGING_MS_API_KEYS", "laptop=aaa,papa=bbb")
+    monkeypatch.setenv("TAGGING_MS_API_KEYS", "client-a=aaa,client-b=bbb")
     monkeypatch.delenv("TAGGING_MS_API_KEY", raising=False)
-    assert client.get("/who", headers=_auth("aaa")).json() == {"label": "laptop", "state": "laptop"}
-    assert client.get("/who", headers=_auth("bbb")).json()["label"] == "papa"
+    assert client.get("/who", headers=_auth("aaa")).json() == {"label": "client-a", "state": "client-a"}
+    assert client.get("/who", headers=_auth("bbb")).json()["label"] == "client-b"
 
 
 def test_removed_key_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TAGGING_MS_API_KEYS", "laptop=aaa")
+    monkeypatch.setenv("TAGGING_MS_API_KEYS", "client-a=aaa")
     monkeypatch.delenv("TAGGING_MS_API_KEY", raising=False)
     assert client.get("/who", headers=_auth("bbb")).status_code == 401
     assert client.get("/who").status_code == 401

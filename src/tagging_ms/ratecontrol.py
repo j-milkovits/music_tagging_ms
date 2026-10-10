@@ -39,10 +39,7 @@ LAST_REQUEST_TIMES: dict[HostKey, float] = defaultdict(lambda: 0.0)
 
 _lock = threading.Lock()
 
-# Per-request upstream statistics, keyed by the request's context. The value
-# is a mutable dict so worker threads running in a copied context (FastAPI's
-# threadpool, the release-fetch pool) increment the same counters the access
-# log middleware reads afterwards.
+# Mutable dict so worker threads in a copied context share the same counters.
 REQUEST_STATS: contextvars.ContextVar[dict[str, int] | None] = contextvars.ContextVar(
     "tagging_ms_request_stats", default=None
 )
@@ -70,13 +67,9 @@ def set_minimum_delay_for_url(url: str, delay_ms: int) -> None:
 
 
 def configure_host(url: str, delay_ms: int, concurrency: int = 1) -> None:
-    """Set the steady-state request spacing and initial window for ``url``'s host.
+    """Set request spacing and the initial congestion window for ``url``'s host.
 
-    Unknown hosts default to 1000 ms spacing and a congestion window of one
-    request, which is correct for the public MusicBrainz API but makes a local
-    mirror needlessly serial. ``delay_ms=0`` disables spacing entirely and
-    ``concurrency`` seeds the window so parallel requests are allowed from the
-    first call instead of after slow-start has opened it.
+    ``delay_ms=0`` disables spacing; ``concurrency`` seeds the window.
     """
     hostkey = hostkey_from_url(url)
     with _lock:
