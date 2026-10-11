@@ -15,7 +15,9 @@ services:
       TAGGING_MS_HOST: 0.0.0.0
       TAGGING_MS_PORT: "8000"
     ports:
-      - "8000:8000"
+      # Explicit 127.0.0.1: Compose sends 0.0.0.0 as the host IP, overriding any
+      # daemon-level default, and Docker's iptables rules bypass the host firewall.
+      - "127.0.0.1:8000:8000"
     volumes:
       - /run/mirror:/run/mirror:ro
     networks: [tagging, mirror]

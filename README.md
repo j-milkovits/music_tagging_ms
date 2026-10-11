@@ -359,18 +359,20 @@ Rollback is these three values plus a restart.
 
 ### Port binding
 
-`compose.yml` publishes `8000:8000` with no explicit address. Docker writes its own iptables
-rules and bypasses host firewalls, so a published port is world-reachable regardless of
-`ufw`. Set the daemon default to loopback on the host:
+Docker writes its own iptables rules and bypasses host firewalls, so a published port is
+world-reachable regardless of `ufw`. `compose.yml` therefore binds explicitly:
 
-```json
-/* /etc/docker/daemon.json */
-{ "ip": "127.0.0.1" }
+```yaml
+ports:
+  - "127.0.0.1:8000:8000"
 ```
 
-Every `-p` binding then defaults to `127.0.0.1`; anything meant to be public must say
-`0.0.0.0:` explicitly. Check with `ss -tlnp | grep 8000` after deploying. Reach the API over
-an SSH tunnel, or add a reverse proxy to the `tagging` network for TLS.
+The host address must be stated in the mapping. A daemon-level
+`{ "ip": "127.0.0.1" }` in `/etc/docker/daemon.json` covers `docker run -p`, but Compose
+sends `0.0.0.0` as the host IP and overrides it — so that alone is not enough. Always verify
+with `ss -tlnp | grep 8000` after deploying; it must show `127.0.0.1:8000`, not `0.0.0.0:8000`.
+
+Reach the API over an SSH tunnel, or add a reverse proxy to the `tagging` network for TLS.
 
 ### Production mode
 
