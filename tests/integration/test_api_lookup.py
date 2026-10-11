@@ -38,8 +38,9 @@ def carmen_items(fingerprints: list[dict]) -> list[dict]:
 # ----- Auth -----
 
 
-def test_health_unauthenticated(client: TestClient) -> None:
-    res = client.get("/api/health")
+def test_health_requires_bearer(client: TestClient) -> None:
+    assert client.get("/api/health").status_code == 401
+    res = client.get("/api/health", headers={"Authorization": "Bearer test-bearer-token"})
     assert res.status_code == 200
     assert res.json() == {"status": "ok"}
 

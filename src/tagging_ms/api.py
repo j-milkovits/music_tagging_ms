@@ -61,9 +61,9 @@ app = FastAPI(
         {"name": "lookup", "description": "Joint or per-file AcoustID lookup."},
         {"name": "disc", "description": "CD DiscID/TOC lookup (no fingerprint)."},
     ],
-    docs_url=None if PRODUCTION else "/docs",
-    redoc_url=None if PRODUCTION else "/redoc",
-    openapi_url=None if PRODUCTION else "/openapi.json",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
 )
 
 service = StandaloneTaggingService()
@@ -617,6 +617,7 @@ class DiscLookupResponse(BaseModel):
     tags=["health"],
     response_model=HealthResponse,
     response_model_exclude_none=True,
+    dependencies=[Depends(require_bearer)],
     summary="Health check",
 )
 def health_check() -> dict[str, object]:

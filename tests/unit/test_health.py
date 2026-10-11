@@ -14,6 +14,7 @@ from tagging_ms import health
 from tagging_ms.musicbrainz import MusicBrainzClient
 
 MIRROR = "http://musicbrainz:5000/ws/2"
+AUTH = {"Authorization": "Bearer test-bearer-token"}
 
 
 def _status_file(tmp_path: Path, last: datetime | None, **extra: object) -> Path:
@@ -75,11 +76,13 @@ def test_endpoint_reports_mirror_block(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setattr(
         api_module.service, "client", MusicBrainzClient(base_url=MIRROR, rate_limit_ms=0)
     )
-    body = TestClient(api_module.app).get("/api/health").json()
+    client = TestClient(api_module.app)
+    body = client.get("/api/health", headers=AUTH).json()
     assert body["status"] == "ok"
     assert body["mirror"]["reachable"] is True
     assert body["mirror"]["replication_sequence"] == 123
 
 
 def test_endpoint_without_mirror_stays_minimal() -> None:
-    assert TestClient(api_module.app).get("/api/health").json() == {"status": "ok"}
+    client = TestClient(api_module.app)
+    assert client.get("/api/health", headers=AUTH).json() == {"status": "ok"}

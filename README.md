@@ -376,9 +376,27 @@ Reach the API over an SSH tunnel, or add a reverse proxy to the `tagging` networ
 
 ### Production mode
 
-`TAGGING_MS_ENV=production` disables `/docs`, `/redoc` and `/openapi.json`, drops `git_sha`
-from `/api/version`, and replaces tracebacks in 500 responses with a correlation ID that is
-logged alongside the full exception. Never run `uvicorn --reload` on a deployed instance.
+`TAGGING_MS_ENV=production` drops `git_sha` from `/api/version` and replaces tracebacks in
+500 responses with a correlation ID that is logged alongside the full exception. Never run
+`uvicorn --reload` on a deployed instance.
+
+`/docs`, `/redoc` and `/openapi.json` stay available — the API exists to be integrated
+against, and endpoint shapes are not a security control. Note that Swagger UI loads its
+assets from `cdn.jsdelivr.net`, so a public `/docs` puts a third-party script on your
+domain; self-host those assets if that matters to you.
+
+### Authentication surface
+
+| Route | Auth |
+|---|---|
+| `/api/lookup`, `/api/disc` | bearer |
+| `/api/health` | **bearer** — reports schema and replication sequences |
+| `/api/version` | none |
+| `/docs`, `/redoc`, `/openapi.json` | none |
+
+`/api/health` requires a token because it exposes mirror internals. The container
+healthcheck therefore probes `/api/version` instead, which needs no credential and still
+proves the app is serving.
 
 ### API keys
 

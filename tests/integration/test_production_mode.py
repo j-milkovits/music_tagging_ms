@@ -23,9 +23,9 @@ def production_client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
         importlib.reload(api_module)
 
 
-def test_docs_are_disabled(production_client: TestClient) -> None:
+def test_docs_stay_available_in_production(production_client: TestClient) -> None:
     for path in ("/docs", "/redoc", "/openapi.json"):
-        assert production_client.get(path).status_code == 404, path
+        assert production_client.get(path).status_code == 200, path
 
 
 def test_version_has_no_git_sha(production_client: TestClient) -> None:
