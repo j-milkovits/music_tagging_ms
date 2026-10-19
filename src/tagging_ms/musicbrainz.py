@@ -185,6 +185,11 @@ class MusicBrainzClient:
             },
         )
 
+    def get_raw(self, path: str, params: dict[str, str]) -> dict:
+        """Arbitrary ws/2 GET, e.g. ``get_raw("/release/<mbid>", {"inc": "labels"})``."""
+        params = {**params, "fmt": "json"}
+        return self._get_json(path, params)
+
     def _get_json(self, path: str, params: dict[str, str]) -> dict:
         url = f"{self.base_url}{path}?{urllib.parse.urlencode(params)}"
 

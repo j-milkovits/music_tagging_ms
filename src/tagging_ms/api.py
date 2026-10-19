@@ -9,10 +9,10 @@ import traceback
 import urllib.error
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Literal
+from typing import Annotated, Literal
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Path, Request, status
 from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
@@ -42,6 +42,13 @@ access_log = logging.getLogger("tagging_ms.access")
 
 PRODUCTION = os.getenv("TAGGING_MS_ENV", "development").strip().lower() == "production"
 
+# ws/2 entities exposed through /api/mb. Everything user-specific (collections,
+# ratings, editor) stays out; the mirror holds none of it anyway.
+MB_ENTITIES = frozenset({
+    "area", "artist", "event", "genre", "instrument", "label", "place", "recording",
+    "release", "release-group", "series", "work", "url", "discid", "isrc", "iswc",
+})
+MB_IDENTIFIER = r"^[A-Za-z0-9._-]{1,128}$"
 MAX_ITEMS = 64
 MAX_FINGERPRINT_CHARS = 16_000
 MAX_BODY_BYTES = 2 * 1024 * 1024
@@ -60,6 +67,7 @@ app = FastAPI(
         {"name": "health", "description": "Service health and version probes."},
         {"name": "lookup", "description": "Joint or per-file AcoustID lookup."},
         {"name": "disc", "description": "CD DiscID/TOC lookup (no fingerprint)."},
+        {"name": "mb", "description": "Authenticated passthrough to the MusicBrainz ws/2 mirror."},
     ],
     docs_url="/docs",
     redoc_url="/redoc",
@@ -735,6 +743,67 @@ def lookup_disc(req: DiscLookupRequest) -> dict:
         raise _internal_error(exc) from exc
 
     return _serialize_disc_result(result)
+
+
+_MB_PASSTHROUGH_DOC = """Forward a GET to the local MusicBrainz mirror's `ws/2` API.
+
+Any request shape that works against `https://musicbrainz.org/ws/2/...` works here with
+the host swapped, e.g.
+
+* `/api/mb/release/<mbid>?inc=artist-credits+labels+recordings+media+isrcs+artist-rels`
+* `/api/mb/release?query=barcode:720642442524`
+* `/api/mb/discid/<discid>?inc=artist-credits`
+
+`fmt=json` is always applied. Responses are the mirror's own, unchanged. Upstream 400/404
+are passed through; other upstream failures return 502."""
+
+
+def _mb_passthrough(entity: str, identifier: str | None, request: Request) -> JSONResponse:
+    if entity not in MB_ENTITIES:
+        raise HTTPException(status_code=404, detail=f"Unknown ws/2 entity: {entity}")
+    path = f"/{entity}" + (f"/{identifier}" if identifier else "")
+    params = {k: v for k, v in request.query_params.items() if k != "fmt"}
+    try:
+        payload = service.client.get_raw(path, params)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (400, 404):
+            try:
+                body = json.load(exc)
+            except Exception:  # noqa: BLE001 - body is optional context
+                body = {"error": exc.reason}
+            return JSONResponse(status_code=exc.code, content=body)
+        logger.warning("mirror returned %s for %s", exc.code, path)
+        raise HTTPException(status_code=502, detail="MusicBrainz mirror error") from exc
+    except urllib.error.URLError as exc:
+        logger.warning("mirror unreachable for %s: %s", path, exc.reason)
+        raise HTTPException(status_code=502, detail="MusicBrainz mirror unreachable") from exc
+    return JSONResponse(content=payload)
+
+
+@app.get(
+    "/api/mb/{entity}",
+    tags=["mb"],
+    dependencies=[Depends(require_bearer)],
+    summary="ws/2 search or browse",
+    description=_MB_PASSTHROUGH_DOC,
+)
+def mb_collection(entity: str, request: Request) -> JSONResponse:
+    return _mb_passthrough(entity, None, request)
+
+
+@app.get(
+    "/api/mb/{entity}/{identifier}",
+    tags=["mb"],
+    dependencies=[Depends(require_bearer)],
+    summary="ws/2 lookup by MBID, DiscID, ISRC or ISWC",
+    description=_MB_PASSTHROUGH_DOC,
+)
+def mb_lookup(
+    entity: str,
+    identifier: Annotated[str, Path(pattern=MB_IDENTIFIER)],
+    request: Request,
+) -> JSONResponse:
+    return _mb_passthrough(entity, identifier, request)
 
 
 def _serialize_lookup_result(result: LookupResult) -> dict:

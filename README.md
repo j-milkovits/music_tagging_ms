@@ -333,6 +333,27 @@ cassettes can be committed safely.
 GPL-2.0, matching the upstream MusicBrainz Picard project from which the
 matching and tag-extraction logic is derived. See [LICENSE](LICENSE).
 
+## Raw MusicBrainz access: `/api/mb/...`
+
+An authenticated GET passthrough to the mirror's `ws/2`. Any request that works against
+`https://musicbrainz.org/ws/2/...` works here with the host swapped and a bearer token:
+
+```bash
+H='Authorization: Bearer <key>'
+curl -H "$H" 'https://<host>/api/mb/release/<mbid>?inc=artist-credits+labels+recordings+media+isrcs+artist-rels+annotation+release-groups+recording-level-rels+work-rels+work-level-rels'
+curl -H "$H" 'https://<host>/api/mb/release?query=barcode:720642442524'
+curl -H "$H" 'https://<host>/api/mb/discid/<discid>?inc=artist-credits'
+```
+
+`fmt=json` is always applied; responses are the mirror's own, unchanged. Entities:
+`area artist event genre instrument label place recording release release-group series
+work url discid isrc iswc`. Upstream 400/404 pass through; other failures return 502.
+Requests share the same concurrency budget as the rest of the service, so bulk exploration
+competes with `/api/lookup` for the mirror.
+
+Not available from a mirror: collections and other user-specific data, cover-art images
+(the index is there, the files live on archive.org), and edit history.
+
 ## Deploying against a MusicBrainz mirror
 
 `deploy/compose.yml` runs the service next to a local `musicbrainz-docker` mirror: read-only
@@ -389,7 +410,7 @@ domain; self-host those assets if that matters to you.
 
 | Route | Auth |
 |---|---|
-| `/api/lookup`, `/api/disc` | bearer |
+| `/api/lookup`, `/api/disc`, `/api/mb/...` | bearer |
 | `/api/health` | **bearer** — reports schema and replication sequences |
 | `/api/version` | none |
 | `/docs`, `/redoc`, `/openapi.json` | none |
